@@ -48,7 +48,8 @@
                         groups="account.group_account_invoice,account.group_account_readonly"/>
                 <button name="action_create_payment" string="Crear pago en Contabilidad" type="object"
                         invisible="state != 'confirmed' or has_payment" groups="base.group_system"/>
-                <field name="state" widget="statusbar" statusbar_visible="draft,pending,confirmed"/></header>
+                <field name="state" widget="statusbar" statusbar_visible="draft,pending,confirmed"/>
+                <field name="has_payment" invisible="1"/></header>
             <sheet>
                 <div class="oe_title" invisible="state != 'confirmed'">
                     <div class="text-muted">Importe recibido</div>
