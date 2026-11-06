@@ -1,0 +1,10 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_binance_account_admin,binance.account.admin,model_binance_verification_account,base.group_system,1,1,1,1
+access_binance_verify_admin,binance.verify.admin,model_binance_payment_verification,base.group_system,1,1,1,1
+access_binance_receipt_admin,binance.receipt.admin,model_binance_receipt_wizard,base.group_system,1,1,1,1
+access_binance_whatsapp_receipt_admin,binance.whatsapp.receipt.admin,model_binance_whatsapp_receipt,base.group_system,1,0,0,1
+access_binance_manual_verify_wizard_admin,binance.manual.verify.wizard.admin,model_binance_manual_verify_wizard,base.group_system,1,1,1,1
+access_binance_account_reviewer,binance.account.reviewer,model_binance_verification_account,group_binance_reviewer,1,0,0,0
+access_binance_verify_reviewer,binance.verify.reviewer,model_binance_payment_verification,group_binance_reviewer,1,0,0,0
+access_binance_whatsapp_receipt_reviewer,binance.whatsapp.receipt.reviewer,model_binance_whatsapp_receipt,group_binance_reviewer,1,0,0,0
+access_binance_manual_verify_wizard_reviewer,binance.manual.verify.wizard.reviewer,model_binance_manual_verify_wizard,group_binance_reviewer,1,1,1,0

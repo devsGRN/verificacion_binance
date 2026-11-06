@@ -1,0 +1,127 @@
+<odoo>
+    <record id="view_binance_whatsapp_receipt_tree" model="ir.ui.view">
+        <field name="name">binance.whatsapp.receipt.tree</field>
+        <field name="model">binance.whatsapp.receipt</field>
+        <field name="arch" type="xml">
+            <tree create="false" edit="false" default_order="id desc">
+                <field name="create_date" string="Recibido el"/>
+                <field name="account_id" string="Cuenta receptora"/>
+                <field name="sender" string="Remitente"/>
+                <field name="state" string="Estado" widget="badge"
+                       decoration-success="state == 'processed'"
+                       decoration-info="state == 'queued'"
+                       decoration-warning="state == 'pending'"
+                       decoration-muted="state == 'duplicate'"
+                       decoration-danger="state in ('error', 'rejected')"/>
+                <button name="action_view_image" type="object" string="Ver captura" icon="fa-image"
+                        invisible="not attachment_id"/>
+                <button name="action_manual_confirm" type="object" string="✅ Pago verificado"
+                        class="btn-success" invisible="state not in ('pending', 'error')"/>
+                <button name="action_manual_reject" type="object" string="❌ Pago errado"
+                        class="btn-danger" invisible="state not in ('pending', 'error')"
+                        confirm="¿Enviar al cliente '❌ Pago errado 🚨🚨'?"/>
+                <field name="verification_id" string="Verificación"/>
+                <field name="detail" string="Detalle"/>
+                <field name="reply_state" string="Respuesta de WhatsApp"/>
+                <field name="reviewed_by_id" optional="hide"/>
+                <field name="final_reply" optional="show"/>
+                <field name="attachment_id" column_invisible="1"/>
+                <field name="needs_review" column_invisible="1"/>
+            </tree>
+        </field>
+    </record>
+    <record id="view_binance_whatsapp_receipt_form" model="ir.ui.view">
+        <field name="name">binance.whatsapp.receipt.form</field>
+        <field name="model">binance.whatsapp.receipt</field>
+        <field name="arch" type="xml">
+            <form create="false" edit="false" delete="false">
+                <header>
+                    <button name="action_manual_confirm" type="object" string="✅ Pago verificado"
+                            class="btn-success" invisible="state not in ('pending', 'error')"/>
+                    <button name="action_manual_reject" type="object" string="❌ Pago errado"
+                            class="btn-danger" invisible="state not in ('pending', 'error')"
+                            confirm="¿Enviar al cliente '❌ Pago errado 🚨🚨'?"/>
+                    <button name="action_view_image" type="object" string="Ver captura" icon="fa-image"
+                            invisible="not attachment_id"/>
+                    <field name="state" widget="statusbar" statusbar_visible="queued,pending,processed"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group string="Para buscar en el correo de Binance">
+                            <field name="read_amount"/>
+                            <field name="read_currency"/>
+                            <field name="read_reference"/>
+                            <field name="supplied_reference" string="ID escrito por el gerente" invisible="not supplied_reference"/>
+                            <field name="received_local"/>
+                            <field name="received_utc"/>
+                        </group>
+                        <group string="Comprobante">
+                            <field name="sender" string="WhatsApp del gerente"/>
+                            <field name="account_id" string="Cuenta receptora"/>
+                            <field name="detail" string="Motivo"/>
+                            <field name="verification_id" string="Verificación"/>
+                            <field name="reviewed_by_id"/>
+                            <field name="final_reply"/>
+                            <field name="attachment_id" invisible="1"/>
+                        </group>
+                    </group>
+                    <field name="image" widget="image" options="{'size': [0, 600]}" readonly="1" invisible="not image"/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="view_binance_manual_verify_wizard_form" model="ir.ui.view">
+        <field name="name">binance.manual.verify.wizard.form</field>
+        <field name="model">binance.manual.verify.wizard</field>
+        <field name="arch" type="xml">
+            <form>
+                <group>
+                    <field name="receipt_id" invisible="1"/>
+                    <field name="allowed_account_ids" invisible="1"/>
+                    <field name="account_id" domain="[('id', 'in', allowed_account_ids)]" options="{'no_create': True}"/>
+                    <field name="reference"/>
+                    <field name="operation_day"/>
+                    <field name="currency"/>
+                    <field name="expected_amount"/>
+                </group>
+                <div class="text-muted">Confirma solo si revisaste el ingreso en Binance. Al confirmar se envía al cliente "✅ Pago verificado !".</div>
+                <footer>
+                    <button name="action_confirm" type="object" string="✅ Confirmar y avisar al cliente" class="btn-success"/>
+                    <button special="cancel" string="Cancelar"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    <record id="action_binance_whatsapp_receipt" model="ir.actions.act_window">
+        <field name="name">Comprobantes de WhatsApp</field>
+        <field name="res_model">binance.whatsapp.receipt</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+    <record id="view_binance_whatsapp_receipt_search" model="ir.ui.view">
+        <field name="name">binance.whatsapp.receipt.search</field>
+        <field name="model">binance.whatsapp.receipt</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="sender" string="WhatsApp"/>
+                <field name="read_reference"/>
+                <filter name="to_review" string="Por revisar" domain="[('needs_review', '=', True)]"/>
+                <filter name="pending" string="Pendientes" domain="[('state', 'in', ('pending', 'error'))]"/>
+            </search>
+        </field>
+    </record>
+    <menuitem id="menu_binance_whatsapp_receipt" name="Comprobantes de WhatsApp"
+              parent="menu_binance_root" action="action_binance_whatsapp_receipt" groups="base.group_system,binance_payment_verify.group_binance_reviewer"/>
+    <data noupdate="1">
+        <record id="cron_binance_whatsapp_receipt" model="ir.cron">
+            <field name="name">Pagos Binance: procesar comprobantes de WhatsApp</field>
+            <field name="model_id" ref="model_binance_whatsapp_receipt"/>
+            <field name="state">code</field>
+            <field name="code">model._cron_process_receipts()</field>
+            <field name="user_id" ref="base.user_root"/>
+            <field name="interval_number">1</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+        </record>
+    </data>
+</odoo>

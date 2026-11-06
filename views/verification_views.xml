@@ -1,0 +1,154 @@
+<odoo>
+    <record id="view_binance_account_tree" model="ir.ui.view">
+        <field name="name">binance.verification.account.tree</field>
+        <field name="model">binance.verification.account</field>
+        <field name="arch" type="xml"><tree><field name="name"/><field name="receiver_uid"/><field name="company_id"/></tree></field>
+    </record>
+    <record id="view_binance_account_form" model="ir.ui.view">
+        <field name="name">binance.verification.account.form</field>
+        <field name="model">binance.verification.account</field>
+        <field name="arch" type="xml"><form><sheet><group>
+            <field name="name" string="Nombre"/>
+            <field name="receiver_uid" string="UID receptor"/>
+            <field name="credential_prefix" string="Prefijo de configuración"/>
+            <separator string="API de Binance" colspan="2"/>
+            <field name="api_key" password="True" groups="base.group_system"/>
+            <field name="api_secret" password="True" groups="base.group_system"/>
+            <field name="company_id" string="Compañía" placeholder="Todas las compañías"/>
+            <separator string="Contabilidad" colspan="2"/>
+            <field name="payment_journal_id" options="{'no_create': True}"/>
+
+            <div class="text-muted" colspan="2">Usa una API de solo lectura para la cuenta del UID receptor.</div>
+            <div class="text-muted">Credenciales de consulta. Se almacenan en esta base de datos y sus copias; el ocultamiento en pantalla no es cifrado. Acceso limitado a administradores.</div>
+        </group></sheet></form></field>
+    </record>
+    <record id="view_binance_verification_tree" model="ir.ui.view">
+        <field name="name">binance.payment.verification.tree</field>
+        <field name="model">binance.payment.verification</field>
+        <field name="arch" type="xml"><tree>
+            <field name="reference"/><field name="account_id"/><field name="kind"/><field name="currency"/>
+            <field name="expected_amount"/>
+            <field name="state" string="Estado" widget="badge"
+                   decoration-success="state == 'confirmed'"
+                   decoration-muted="state == 'draft'"
+                   decoration-warning="state == 'pending'"
+                   decoration-danger="state in ('mismatch', 'unavailable')"/>
+            <field name="checked_at"/>
+            <field name="received_amount" optional="show"/>
+            <field name="payment_id" optional="show" groups="account.group_account_invoice,account.group_account_readonly"/>
+        </tree></field>
+    </record>
+    <record id="view_binance_verification_form" model="ir.ui.view">
+        <field name="name">binance.payment.verification.form</field>
+        <field name="model">binance.payment.verification</field>
+        <field name="arch" type="xml"><form>
+            <header><button name="action_verify" string="Consultar Binance" type="object" class="oe_highlight" invisible="state == 'confirmed'" groups="base.group_system"/>
+                <button name="action_view_receipt_image" string="Ver captura" type="object" icon="fa-image" invisible="not receipt_ids"/>
+                <button name="action_open_payment" string="Abrir pago" type="object" icon="fa-money" invisible="not has_payment"
+                        groups="account.group_account_invoice,account.group_account_readonly"/>
+                <button name="action_create_payment" string="Crear pago en Contabilidad" type="object"
+                        invisible="state != 'confirmed' or has_payment" groups="base.group_system"/>
+                <field name="state" widget="statusbar" statusbar_visible="draft,pending,confirmed"/></header>
+            <sheet>
+                <div class="oe_title" invisible="state != 'confirmed'">
+                    <div class="text-muted">Importe recibido</div>
+                    <h1><field name="received_amount" class="oe_inline" readonly="1"/> <field name="currency" class="oe_inline" readonly="1"/></h1>
+                </div>
+                <group>
+                    <group string="Pago">
+                        <field name="company_id" string="Compañía" readonly="state != 'draft'"/>
+                        <field name="account_id" string="Cuenta receptora" domain="[('company_id', 'in', [False, company_id])]" readonly="state != 'draft'"/>
+                        <field name="kind" string="Modalidad" readonly="state != 'draft'"/>
+                        <field name="reference" string="ID de orden" readonly="state != 'draft'"/>
+                        <field name="operation_day" string="Fecha de operación (UTC)" readonly="state != 'draft'"/>
+                        <field name="currency" string="Moneda" readonly="state != 'draft'" invisible="state == 'confirmed'"/>
+                        <field name="expected_amount" string="Importe esperado" readonly="state != 'draft'"/>
+                        <field name="network" string="Red" invisible="kind != 'deposit'" readonly="state != 'draft'"/>
+                    </group>
+                    <group string="Resultado">
+                        <field name="whatsapp_sender" invisible="not whatsapp_sender"/>
+                        <field name="result_message" string="Resultado"/>
+                        <field name="canonical_id" string="ID en Binance"/>
+                        <field name="confirmed_amount" string="Importe confirmado"/>
+                        <field name="checked_at" string="Verificado el"/>
+                    </group>
+                </group>
+                <group string="Contabilidad" invisible="state != 'confirmed'"
+                       groups="account.group_account_invoice,account.group_account_readonly">
+                    <field name="payment_id" string="Pago (borrador)"/>
+                    <field name="payment_error" invisible="not payment_error" decoration-danger="1"/>
+                </group>
+                <notebook>
+                    <page string="Comprobantes de WhatsApp" name="receipts" invisible="not receipt_ids">
+                        <field name="receipt_ids" readonly="1">
+                            <tree>
+                                <field name="create_date" string="Recibido el"/>
+                                <field name="sender" string="Remitente"/>
+                                <field name="state" string="Estado"/>
+                                <field name="final_reply"/>
+                                <button name="action_view_image" type="object" string="Ver captura" icon="fa-image"/>
+                            </tree>
+                        </field>
+                    </page>
+                </notebook>
+            </sheet>
+        </form></field>
+    </record>
+    <record id="action_binance_account" model="ir.actions.act_window">
+        <field name="name">Cuentas receptoras</field><field name="res_model">binance.verification.account</field><field name="view_mode">tree,form</field>
+    </record>
+    <record id="action_binance_verify" model="ir.actions.act_window">
+        <field name="name">Verificaciones de ingresos</field><field name="res_model">binance.payment.verification</field><field name="view_mode">tree,form</field>
+    </record>
+    <menuitem id="menu_binance_root" name="Pagos Binance" groups="base.group_system,binance_payment_verify.group_binance_reviewer" web_icon="binance_payment_verify,static/description/icon.png"/>
+    <menuitem id="menu_binance_verify" name="Verificaciones" parent="menu_binance_root" action="action_binance_verify"/>
+    <menuitem id="menu_binance_configuration" name="Configuración" parent="menu_binance_root" sequence="90" groups="base.group_system"/>
+    <menuitem id="menu_binance_account" name="Ajustes" parent="menu_binance_configuration"
+              action="action_binance_account" sequence="10"/>
+
+    <record id="view_binance_whatsapp_line_tree" model="ir.ui.view">
+        <field name="name">binance.whatsapp.line.tree</field>
+        <field name="model">binance.verification.account</field>
+        <field name="priority">30</field>
+        <field name="arch" type="xml">
+            <tree create="false" delete="false">
+                <field name="name" string="Cuenta receptora de Binance"/>
+                <field name="company_id"/>
+                <field name="whatsapp_account_id" string="Línea receptora de WhatsApp"/>
+                <field name="whatsapp_mode" widget="badge"
+                       decoration-info="whatsapp_mode == 'test'"
+                       decoration-success="whatsapp_mode == 'customers'"
+                       decoration-muted="whatsapp_mode == 'disabled'"/>
+            </tree>
+        </field>
+    </record>
+    <record id="view_binance_whatsapp_line_form" model="ir.ui.view">
+        <field name="name">binance.whatsapp.line.form</field>
+        <field name="model">binance.verification.account</field>
+        <field name="priority">30</field>
+        <field name="arch" type="xml">
+            <form create="false" delete="false">
+                <sheet>
+                    <group string="Números de WhatsApp">
+                        <field name="name" string="Cuenta receptora de Binance" readonly="1"/>
+                        <field name="company_id" readonly="1" placeholder="Todas las compañías"/>
+                        <field name="whatsapp_account_id" string="Línea receptora de WhatsApp"
+                               options="{'no_create': True, 'no_open': True}"/>
+                        <field name="whatsapp_mode"/>
+                        <field name="whatsapp_test_sender" invisible="whatsapp_mode != 'test'"/>
+                        <field name="manager_numbers" invisible="whatsapp_mode != 'customers'"
+                               placeholder="+58 412-1234567 (uno por línea)"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_binance_whatsapp_lines" model="ir.actions.act_window">
+        <field name="name">Números de WhatsApp con el bot</field>
+        <field name="res_model">binance.verification.account</field>
+        <field name="view_mode">tree,form</field>
+        <field name="view_ids" eval="[(5, 0, 0), (0, 0, {'view_mode': 'tree', 'view_id': ref('view_binance_whatsapp_line_tree')}), (0, 0, {'view_mode': 'form', 'view_id': ref('view_binance_whatsapp_line_form')})]"/>
+    </record>
+    <menuitem id="menu_binance_whatsapp_lines" name="Números de WhatsApp con el bot"
+              parent="menu_binance_configuration" action="action_binance_whatsapp_lines" sequence="20"/>
+</odoo>

@@ -1,0 +1,12 @@
+<odoo>
+    <record id="module_category_binance_payments" model="ir.module.category">
+        <field name="name">Pagos Binance</field>
+        <field name="sequence">90</field>
+    </record>
+    <record id="group_binance_reviewer" model="res.groups">
+        <field name="name">Revisor de pagos</field>
+        <field name="category_id" ref="module_category_binance_payments"/>
+        <field name="comment">Ve los comprobantes de WhatsApp y las verificaciones, recibe la actividad
+"Revisar pago Binance" y decide con ✅ Pago verificado / ❌ Pago errado. No ve claves ni configuración.</field>
+    </record>
+</odoo>

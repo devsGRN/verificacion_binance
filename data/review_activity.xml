@@ -1,0 +1,11 @@
+<odoo>
+    <data noupdate="1">
+        <record id="activity_type_binance_review" model="mail.activity.type">
+            <field name="name">Revisar pago Binance</field>
+            <field name="res_model">binance.whatsapp.receipt</field>
+            <field name="icon">fa-money</field>
+            <field name="delay_count">0</field>
+            <field name="category">default</field>
+        </record>
+    </data>
+</odoo>
