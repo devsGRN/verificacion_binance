@@ -10,8 +10,8 @@ el motivo se ve en la verificación, con un botón para reintentarlo.
 import logging
 from zoneinfo import ZoneInfo
 
-from odoo import SUPERUSER_ID, fields, models
-from odoo.exceptions import UserError
+from odoo import SUPERUSER_ID, api, fields, models
+from odoo.exceptions import UserError, ValidationError
 
 _logger = logging.getLogger(__name__)
 
@@ -23,9 +23,17 @@ class BinanceVerificationAccount(models.Model):
 
     payment_journal_id = fields.Many2one(
         'account.journal', string='Diario de pagos',
-        domain="[('type', 'in', ('bank', 'cash')), ('company_id', '=', company_id)]",
+        domain="[('type', 'in', ('bank', 'cash'))]",
         help='Diario donde se crean los pagos en borrador (por ejemplo "Binance").',
     )
+
+    @api.constrains('payment_journal_id', 'company_id')
+    def _check_payment_journal_company(self):
+        for account in self:
+            journal = account.payment_journal_id
+            if journal and account.company_id and journal.company_id != account.company_id:
+                raise ValidationError('El diario "%s" es de otra compañía (%s).'
+                                      % (journal.name, journal.company_id.name))
 
 
 class BinancePaymentVerification(models.Model):

@@ -19,7 +19,7 @@
             <field name="payment_journal_id" options="{'no_create': True}"/>
 
             <div class="text-muted" colspan="2">Usa una API de solo lectura para la cuenta del UID receptor.</div>
-            <div class="text-muted">Credenciales de consulta. Se almacenan en esta base de datos y sus copias; el ocultamiento en pantalla no es cifrado. Acceso limitado a administradores.</div>
+            <div class="text-muted" colspan="2">Credenciales de consulta. Se almacenan en esta base de datos y sus copias; el ocultamiento en pantalla no es cifrado. Acceso limitado a administradores.</div>
         </group></sheet></form></field>
     </record>
     <record id="view_binance_verification_tree" model="ir.ui.view">
