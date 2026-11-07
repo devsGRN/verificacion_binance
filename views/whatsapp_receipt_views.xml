@@ -59,6 +59,8 @@
                             <field name="sender" string="WhatsApp del gerente"/>
                             <field name="account_id" string="Cuenta receptora"/>
                             <field name="detail" string="Motivo"/>
+                            <field name="before_cutoff" invisible="not before_cutoff"/>
+                            <field name="cutoff_notice" invisible="not before_cutoff"/>
                             <field name="verification_id" string="Verificación"/>
                             <field name="reviewed_by_id"/>
                             <field name="final_reply"/>
@@ -106,6 +108,7 @@
                 <field name="read_reference"/>
                 <filter name="to_review" string="Por revisar" domain="[('needs_review', '=', True)]"/>
                 <filter name="pending" string="Pendientes" domain="[('state', 'in', ('pending', 'error'))]"/>
+                <filter name="before_cutoff" string="Anteriores a la fecha de corte" domain="[('before_cutoff', '=', True)]"/>
             </search>
         </field>
     </record>

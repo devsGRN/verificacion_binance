@@ -15,6 +15,10 @@
             <field name="api_key" password="True" groups="base.group_system"/>
             <field name="api_secret" password="True" groups="base.group_system"/>
             <field name="company_id" string="Compañía" placeholder="Todas las compañías"/>
+            <separator string="Registro automático" colspan="2"/>
+            <field name="auto_register_from"/>
+            <field name="cutoff_notify_numbers" placeholder="+58 414-1234567 (uno por línea)"/>
+            <div class="text-muted" colspan="2">Los pagos anteriores a esta fecha no se registran solos: quedan pendientes, el gerente recibe un aviso y estos números reciben un WhatsApp para revisar que no estuvieran ya registrados.</div>
             <separator string="Contabilidad" colspan="2"/>
             <field name="payment_journal_id" options="{'no_create': True}"/>
             <field name="payment_partner_id" options="{'no_create': True}"/>
@@ -73,6 +77,7 @@
                         <field name="canonical_id" string="ID en Binance"/>
                         <field name="confirmed_amount" string="Importe confirmado"/>
                         <field name="checked_at" string="Verificado el"/>
+                        <field name="paid_at" invisible="not paid_at"/>
                     </group>
                 </group>
                 <group string="Contabilidad" invisible="state != 'confirmed'"

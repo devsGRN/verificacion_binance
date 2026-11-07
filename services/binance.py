@@ -66,6 +66,7 @@ class Result:
     incomplete: bool = False
     currency: str = ''
     operation_day: date | None = None
+    paid_at: datetime | None = None  # hora real del pago según Binance (UTC)
 
 
 def evaluate(kind, records, reference, currency, expected_amount, receiver_uid,
@@ -109,16 +110,21 @@ def evaluate(kind, records, reference, currency, expected_amount, receiver_uid,
         canonical = str(record.get('id', ''))
     if not canonical:
         return Result('pending', 'La respuesta no incluye un identificador canónico.')
-    operation_day = None
-    if kind == 'pay' and require_date:
+    operation_day = paid_at = None
+    if kind == 'pay':
         try:
-            operation_day = datetime.fromtimestamp(int(record['transactionTime']) / 1000, timezone.utc).date()
+            paid_at = datetime.fromtimestamp(int(record['transactionTime']) / 1000, timezone.utc)
         except (KeyError, TypeError, ValueError, OverflowError, OSError):
-            return Result('pending', 'Binance no devolvió una fecha válida para la orden.')
+            paid_at = None
+        if require_date:
+            if paid_at is None:
+                return Result('pending', 'Binance no devolvió una fecha válida para la orden.')
+            operation_day = paid_at.date()
     if not isinstance(actual_currency, str) or not actual_currency:
         return Result('pending', 'Binance no devolvió una moneda válida para la orden.')
     return Result('confirmed', 'Ingreso verificado en Binance',
-                  canonical, format(actual, 'f'), currency=actual_currency, operation_day=operation_day)
+                  canonical, format(actual, 'f'), currency=actual_currency, operation_day=operation_day,
+                  paid_at=paid_at)
 
 
 # Explicación en español de los errores más comunes de Binance.
@@ -235,31 +241,65 @@ class BinanceReader:
         edges = [0, 2, 24, hours]
         return [(now - b * hour, now - a * hour - (1 if a else 0)) for a, b in zip(edges, edges[1:])]
 
-    def find_pay_by_suffix(self, suffix, receiver_uid, amount=None, hours=48):
-        """IDs de pagos recientes recibidos por receiver_uid cuyo ID de orden termina en suffix."""
+    EXTENDED_CALLS = 40
+
+    def _older_windows(self, hours, days):
+        """Tramos de un día, desde antes de las primeras `hours` horas hasta `days` días atrás."""
+        now, day = self._now_ms(), 24 * 3600 * 1000
+        end, limit = now - hours * 3600 * 1000 - 1, now - days * day
+        windows = []
+        while end > limit:
+            start = max(end - day + 1, limit)
+            windows.append((start, end))
+            end = start - 1
+        return windows
+
+    def find_pay_by_suffix(self, suffix, receiver_uid, amount=None, hours=48, days=0):
+        """Pagos recibidos por receiver_uid cuyo ID de orden termina en suffix.
+
+        Busca primero en las últimas `hours` horas. Si no hay ninguno y `days` > 0, sigue
+        hacia atrás día por día hasta `days` días (pagos viejos) y se detiene en el primer
+        día con coincidencias. Devuelve ({ID completo: día UTC del pago}, búsqueda_incompleta)."""
         expected = positive_decimal(amount) if amount else None
-        found, truncated, budget = set(), False, [self.MAX_CALLS]
-        for start, end in self._recent_windows(hours):
-            rows, cut = self._rows_between(start, end, budget)
-            truncated = truncated or cut
-            for record in rows:
-                receiver = record.get('receiverInfo')
-                if not isinstance(receiver, dict) or str(receiver.get('binanceId', '')) != receiver_uid:
-                    continue
-                try:
-                    if expected is not None and positive_decimal(record.get('amount')) != expected:
+        found, truncated = {}, False
+        budget = [self.EXTENDED_CALLS if days else self.MAX_CALLS]
+
+        def scan(windows, stop_on_match):
+            nonlocal truncated
+            for start, end in windows:
+                rows, cut = self._rows_between(start, end, budget)
+                truncated = truncated or cut
+                for record in rows:
+                    receiver = record.get('receiverInfo')
+                    if not isinstance(receiver, dict) or str(receiver.get('binanceId', '')) != receiver_uid:
                         continue
-                except ValueError:
-                    continue
-                for field in ('orderId', 'transactionId'):
-                    value = str(record.get(field) or '')
-                    if value.endswith(suffix):
-                        found.add(value)
-                        break
-            if budget[0] <= 0:
-                truncated = True
-                break
+                    try:
+                        if expected is not None and positive_decimal(record.get('amount')) != expected:
+                            continue
+                    except ValueError:
+                        continue
+                    for field in ('orderId', 'transactionId'):
+                        value = str(record.get(field) or '')
+                        if value.endswith(suffix):
+                            try:
+                                day = datetime.fromtimestamp(int(record['transactionTime']) / 1000,
+                                                             timezone.utc).date()
+                            except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                                day = None
+                            found[value] = day
+                            break
+                if stop_on_match and found:
+                    return
+                if budget[0] <= 0:
+                    truncated = True
+                    return
+
+        scan(self._recent_windows(hours), stop_on_match=False)
+        if not found and days and budget[0] > 0:
+            scan(self._older_windows(hours, days), stop_on_match=True)
         return found, truncated
+
+    SEARCH_DAYS = 30
 
     def verify(self, kind, reference, currency, amount, receiver_uid, operation_day, network=''):
         if kind not in ('pay', 'deposit'):
@@ -271,8 +311,10 @@ class BinanceReader:
                 start = int(day.timestamp() * 1000)
                 windows = [(start, start + 24 * 3600 * 1000 - 1)]
             else:
-                # Captura sin fecha ("Pago exitoso"): buscar de lo más reciente a lo más antiguo.
-                windows = self._recent_windows(48)
+                # Captura sin fecha ("Pago exitoso"): buscar de lo más reciente a lo más antiguo,
+                # primero 48 h y luego día por día hasta 30 días (pagos viejos incluidos).
+                budget = [self.EXTENDED_CALLS]
+                windows = self._recent_windows(48) + self._older_windows(48, self.SEARCH_DAYS)
             for start, end in windows:
                 rows, cut = self._rows_between(start, end, budget)
                 truncated = truncated or cut

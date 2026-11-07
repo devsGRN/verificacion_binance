@@ -15,6 +15,9 @@ from ..services.receipt_ocr import ReceiptError, read_receipt
 
 _logger = logging.getLogger(__name__)
 
+# Con los últimos 6 dígitos del ID, buscar pagos hasta 30 días atrás (pagos viejos incluidos).
+SUFFIX_SEARCH_DAYS = 30
+
 
 def normalize_number(raw):
     """'+58 414-3556989' / '0414 3556989' / '584143556989' -> '584143556989'."""
@@ -406,6 +409,9 @@ class BinanceWhatsAppReceipt(models.Model):
                 # captura no le corresponden. Binance aporta los datos reales de ese ID.
                 values.update(operation_day=None, currency=None, expected_amount=None)
             values['reference'] = supplied
+            binance_day = values.pop('_binance_day', None)
+            if binance_day:
+                values['operation_day'] = binance_day
         if not values.get('reference'):
             # Sin ID legible: pedir los últimos 6 dígitos. La fecha y el importe son opcionales
             # (la pantalla "Pago exitoso" no muestra fecha); Binance aporta los datos reales.
@@ -415,6 +421,11 @@ class BinanceWhatsAppReceipt(models.Model):
             })
             return
         verifications = self.env['binance.payment.verification']
+        for candidate in candidates:
+            short = verifications._confirmed_by_short_reference(candidate, [values['reference']])
+            if short:
+                self._mark_short_duplicate(short)
+                return
         account = candidates[:1]
         if len(candidates) > 1:
             account, result = self._find_receiving_account(candidates, values)
@@ -459,31 +470,53 @@ class BinanceWhatsAppReceipt(models.Model):
         if existing:
             self._link_confirmed_verification(existing, values)
             return
+        short = verifications._confirmed_by_short_reference(
+            account, [values['reference'], result.canonical_id])
+        if short:
+            self._mark_short_duplicate(short)
+            return
 
         record = verifications._get_receipt_verification(account, values, account.company_id)
         self._link_confirmed_verification(record, values, result=result)
 
+    def _mark_short_duplicate(self, short):
+        """El pago ya se había aprobado a mano con solo los últimos dígitos del ID."""
+        self.write({
+            'account_id': short.account_id.id, 'verification_id': short.id, 'state': 'duplicate',
+            'detail': 'El pago ya estaba verificado con el ID abreviado %s.' % short.reference,
+            'awaiting_reference': False, 'reply_state': 'queued',
+        })
+
     def _resolve_reference_suffix(self, candidates, suffix, values):
         """Convierte los últimos dígitos del cliente en el ID completo de un pago reciente."""
         ocr_reference = values.get('reference')
-        if ocr_reference and ocr_reference.endswith(suffix):
-            return ocr_reference
-        found, incomplete = set(), False
+        found, incomplete = {}, False
         for account in candidates:
             try:
-                references, truncated = account._find_pay_by_suffix(suffix, values.get('expected_amount'))
+                references, truncated = account._find_pay_by_suffix(
+                    suffix, values.get('expected_amount'), days=SUFFIX_SEARCH_DAYS)
                 if not references and values.get('expected_amount'):
                     # El importe leído puede estar mal: repetir solo por los dígitos.
-                    references, truncated = account._find_pay_by_suffix(suffix)
+                    references, truncated = account._find_pay_by_suffix(suffix, days=SUFFIX_SEARCH_DAYS)
             except VerificationUnavailable:
                 incomplete = True
                 continue
-            found |= references
+            found.update(references)
             incomplete = incomplete or truncated
+        if ocr_reference in found:
+            found = {ocr_reference: found[ocr_reference]}
+        if not found and ocr_reference and ocr_reference.endswith(suffix):
+            # Binance no lo encontró por los dígitos: seguir con el ID leído de la captura.
+            return ocr_reference
         if len(found) == 1:
-            return found.pop()
-        detail = ('Ningún pago de las últimas 48 h termina en %s.' % suffix if not found else
-                  'Varios pagos recientes terminan en %s.' % suffix)
+            reference, day = found.popitem()
+            if day:
+                # Fecha real del pago según Binance: así la consulta va directo a ese día
+                # (pagos viejos incluidos) y se aplica la fecha de corte.
+                values['_binance_day'] = day
+            return reference
+        detail = ('Ningún pago de los últimos %s días termina en %s.' % (SUFFIX_SEARCH_DAYS, suffix)
+                  if not found else 'Varios pagos terminan en %s.' % suffix)
         if incomplete:
             detail += ' La búsqueda en Binance no fue completa.'
         self.write({
@@ -574,7 +607,7 @@ class BinanceWhatsAppReceipt(models.Model):
                 'del ID de orden en un mensaje de texto.'
             )
         elif in_review:
-            body = '🕐 No pudimos validar su pago automáticamente. Un agente lo revisará en breve.'
+            body = self._in_review_message()
         elif request_image:
             body = (
                 'No hemos podido leer la fecha o el importe del comprobante. '
@@ -591,6 +624,9 @@ class BinanceWhatsAppReceipt(models.Model):
             self.final_reply = verdict
         if request_reference:
             self.reference_requested_at = fields.Datetime.now()
+
+    def _in_review_message(self):
+        return '🕐 No pudimos validar su pago automáticamente. Un agente lo revisará en breve.'
 
     def _send_whatsapp_now(self, mail_message):
         """Si Odoo dejó el WhatsApp en cola, enviarlo ya en lugar de esperar a su cron."""
@@ -684,6 +720,12 @@ class BinanceManualVerifyWizard(models.TransientModel):
         if self.account_id not in receipt._eligible_receivers():
             raise UserError('La cuenta receptora no está habilitada para este remitente de WhatsApp.')
         verifications = self.env['binance.payment.verification'].sudo()
+        if re.fullmatch(r'[0-9]{1,11}', reference):
+            reference = self._full_reference(reference)
+        short = verifications._confirmed_by_short_reference(self.account_id, [reference])
+        if short:
+            raise UserError('Este pago ya está verificado (con el ID abreviado %s). No se puede usar dos veces.'
+                            % short.reference)
         existing = verifications.search([
             ('account_id', '=', self.account_id.id), ('kind', '=', 'pay'),
             '|', ('reference', '=', reference), ('canonical_id', '=', reference),
@@ -706,3 +748,21 @@ class BinanceManualVerifyWizard(models.TransientModel):
         })
         receipt._trigger_processing()
         return {'type': 'ir.actions.act_window_close'}
+
+    def _full_reference(self, suffix):
+        """Convierte los últimos dígitos en el ID de orden completo consultando Binance, para
+        que el mismo pago no pueda registrarse otra vez con su ID completo."""
+        if len(suffix) < 6:
+            raise UserError('Escribe al menos los últimos 6 dígitos del ID de orden, o el ID completo.')
+        try:
+            found, truncated = self.account_id.sudo()._find_pay_by_suffix(suffix, days=SUFFIX_SEARCH_DAYS)
+        except VerificationUnavailable as error:
+            raise UserError('No se pudo consultar Binance para completar el ID (%s). '
+                            'Escribe el ID de orden completo.' % error) from None
+        if len(found) == 1:
+            return next(iter(found))
+        if found:
+            raise UserError('Varios pagos terminan en %s. Escribe el ID de orden completo.' % suffix)
+        raise UserError('No hay pagos en Binance de los últimos %s días cuyo ID termine en %s%s. '
+                        'Revisa los dígitos o escribe el ID de orden completo.'
+                        % (SUFFIX_SEARCH_DAYS, suffix, ' (la búsqueda no fue completa)' if truncated else ''))

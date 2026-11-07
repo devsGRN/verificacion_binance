@@ -50,9 +50,9 @@ class BinanceVerificationAccount(models.Model):
             api_secret = os.environ.get(self.credential_prefix + '_API_SECRET', '').strip()
         return BinanceReader(api_key, api_secret)
 
-    def _find_pay_by_suffix(self, suffix, amount=None):
+    def _find_pay_by_suffix(self, suffix, amount=None, days=0):
         self.ensure_one()
-        return self._binance_reader().find_pay_by_suffix(suffix, self.receiver_uid, amount)
+        return self._binance_reader().find_pay_by_suffix(suffix, self.receiver_uid, amount, days=days)
 
     def _query_binance(self, kind, reference, currency, amount, operation_day, network=''):
         self.ensure_one()
@@ -97,12 +97,14 @@ class BinancePaymentVerification(models.Model):
     canonical_id = fields.Char(readonly=True, copy=False)
     confirmed_amount = fields.Char(readonly=True, copy=False)
     checked_at = fields.Datetime(readonly=True, copy=False)
+    paid_at = fields.Datetime(string='Fecha del pago (Binance)', readonly=True, copy=False,
+                              help='Fecha y hora real del pago según Binance.')
 
     _sql_constraints = [
         ('request_unique', 'unique(account_id, kind, reference)', 'La referencia ya está registrada en esta cuenta.'),
         ('canonical_unique', 'unique(account_id, kind, canonical_id)', 'El ingreso ya tiene un registro.'),
     ]
-    _RESULT_FIELDS = {'state', 'result_message', 'canonical_id', 'confirmed_amount', 'checked_at'}
+    _RESULT_FIELDS = {'state', 'result_message', 'canonical_id', 'confirmed_amount', 'checked_at', 'paid_at'}
 
     @api.onchange('company_id')
     def _onchange_company_id(self):
@@ -132,7 +134,7 @@ class BinancePaymentVerification(models.Model):
             raise UserError('Los resultados solo pueden generarse mediante la consulta a Binance.')
         # Explicit defaults also prevent default_* context keys from forging results.
         safe = [dict(vals, state='draft', result_message=False, canonical_id=False,
-                     confirmed_amount=False, checked_at=False) for vals in vals_list]
+                     confirmed_amount=False, checked_at=False, paid_at=False) for vals in vals_list]
         return super().create(safe)
 
     # Campos del sistema que se pueden escribir en un pago ya verificado (no tocan el resultado).
@@ -149,6 +151,21 @@ class BinancePaymentVerification(models.Model):
 
     def copy(self, default=None):
         raise UserError('Cree una nueva solicitud con su referencia única.')
+
+    @api.model
+    def _confirmed_by_short_reference(self, account, full_ids):
+        """Pagos confirmados a mano solo con los últimos dígitos del ID (por ejemplo "888704").
+        Sirve para no registrar dos veces un pago que luego llega con su ID completo."""
+        full_ids = [ref for ref in full_ids if ref]
+        if not full_ids:
+            return self.browse()
+        self.env.cr.execute("""
+            SELECT id FROM binance_payment_verification
+            WHERE account_id = %s AND kind = 'pay' AND state = 'confirmed' AND length(reference) < 12
+        """, [account.id])
+        candidates = self.browse([row[0] for row in self.env.cr.fetchall()]).filtered(
+            lambda rec: rec.reference not in full_ids)
+        return candidates.filtered(lambda rec: any(ref.endswith(rec.reference) for ref in full_ids))[:1]
 
     @api.model
     def _get_receipt_verification(self, account, values, company):
@@ -177,8 +194,30 @@ class BinancePaymentVerification(models.Model):
         super(BinancePaymentVerification, self).write({
             'state': 'confirmed',
             'result_message': 'Verificado manualmente por %s' % reviewer.name,
-            'canonical_id': self.reference,
-            'confirmed_amount': self.expected_amount,
+            # Si Binance ya lo había encontrado (pago anterior a la fecha de corte), se
+            # conservan su ID e importe reales.
+            'canonical_id': self.canonical_id or self.reference,
+            'confirmed_amount': self.confirmed_amount or self.expected_amount,
+            'checked_at': fields.Datetime.now(),
+        })
+        return True
+
+    def _hold_for_review(self, result, message):
+        """Pago encontrado en Binance que no se registra solo: queda Pendiente para RRHH.
+
+        Guarda los datos reales de Binance (ID, importe y fecha) para quien revise.
+        Devuelve False si el pago ya estaba verificado."""
+        self.ensure_one()
+        self.env.cr.execute('SELECT id FROM binance_payment_verification WHERE id = %s FOR UPDATE', [self.id])
+        self.invalidate_recordset()
+        if self.state == 'confirmed':
+            return False
+        super(BinancePaymentVerification, self).write({
+            'state': 'pending',
+            'result_message': message,
+            'canonical_id': result.canonical_id or False,
+            'confirmed_amount': result.amount or False,
+            'paid_at': result.paid_at.replace(tzinfo=None) if result.paid_at else False,
             'checked_at': fields.Datetime.now(),
         })
         return True
@@ -197,6 +236,8 @@ class BinancePaymentVerification(models.Model):
             vals = {'state': result.state, 'result_message': result.message,
                     'canonical_id': result.canonical_id or False,
                     'confirmed_amount': result.amount or False}
+            if result.paid_at:
+                vals['paid_at'] = result.paid_at.replace(tzinfo=None)
         except VerificationUnavailable as exc:
             vals = {'state': 'unavailable', 'result_message': str(exc)}
         vals['checked_at'] = fields.Datetime.now()

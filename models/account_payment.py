@@ -2,7 +2,7 @@
 
 Cuando un pago queda Verificado (por el bot o por un revisor), se crea en
 Contabilidad → Clientes → Pagos un pago en BORRADOR:
-  diario Binance, tipo Recibir, moneda USD, fecha del pago, importe verificado,
+  diario Binance, tipo Recibir, moneda USD, fecha real del pago según Binance, importe verificado,
   memo "USDT REF: <últimos 6 dígitos>" y el "Cliente por defecto" de la cuenta
   receptora (por ejemplo "BINANCE - POR ASIGNAR"); si no hay, el cliente queda vacío.
   Contabilidad reemplaza ese cliente por el real antes de confirmar.
@@ -69,8 +69,15 @@ class BinancePaymentVerification(models.Model):
         return res
 
     def _payment_date(self):
+        """Fecha real del pago según Binance (hora de Caracas). Así un pago viejo aprobado
+        después por el revisor queda con su fecha y no con la de la aprobación."""
         self.ensure_one()
-        moment = fields.Datetime.to_datetime(self.checked_at or fields.Datetime.now())
+        if self.paid_at:
+            moment = fields.Datetime.to_datetime(self.paid_at)
+        elif self.operation_day:
+            return self.operation_day
+        else:
+            moment = fields.Datetime.to_datetime(self.checked_at or fields.Datetime.now())
         return moment.replace(tzinfo=ZoneInfo('UTC')).astimezone(ZoneInfo(TIMEZONE)).date()
 
     def _create_draft_payment(self):
