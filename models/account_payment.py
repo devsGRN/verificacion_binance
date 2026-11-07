@@ -115,7 +115,7 @@ class BinancePaymentVerification(models.Model):
             'amount': amount,
             'currency_id': currency.id,
             'date': self._payment_date(),
-            'ref': 'USDT REF: %s' % self._short_reference(),
+            'ref': 'USDT REFF: %s' % self._short_reference(),
         }
         partner = self.account_id.payment_partner_id
         if partner:
