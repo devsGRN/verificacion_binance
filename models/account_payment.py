@@ -3,7 +3,9 @@
 Cuando un pago queda Verificado (por el bot o por un revisor), se crea en
 Contabilidad → Clientes → Pagos un pago en BORRADOR:
   diario Binance, tipo Recibir, moneda USD, fecha del pago, importe verificado,
-  memo "USDT REF: <últimos 6 dígitos>" y cliente vacío (lo completa contabilidad).
+  memo "USDT REF: <últimos 6 dígitos>" y el "Cliente por defecto" de la cuenta
+  receptora (por ejemplo "BINANCE - POR ASIGNAR"); si no hay, el cliente queda vacío.
+  Contabilidad reemplaza ese cliente por el real antes de confirmar.
 Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
 el motivo se ve en la verificación, con un botón para reintentarlo.
 """
@@ -25,6 +27,12 @@ class BinanceVerificationAccount(models.Model):
         'account.journal', string='Diario de pagos',
         domain="[('type', 'in', ('bank', 'cash'))]",
         help='Diario donde se crean los pagos en borrador (por ejemplo "Binance").',
+    )
+    payment_partner_id = fields.Many2one(
+        'res.partner', string='Cliente por defecto',
+        help='Cliente provisional de los pagos en borrador (por ejemplo "BINANCE - POR ASIGNAR"). '
+             'Contabilidad lo reemplaza por el cliente real antes de confirmar. '
+             'Si se deja vacío, el pago se crea sin cliente.',
     )
 
     @api.constrains('payment_journal_id', 'company_id')
@@ -93,7 +101,7 @@ class BinancePaymentVerification(models.Model):
         if not amount:
             raise UserError('El pago verificado no tiene un importe válido.')
         currency = self.env.ref('base.USD')
-        payment = self.env['account.payment'].with_user(SUPERUSER_ID).with_company(journal.company_id).create({
+        values = {
             'payment_type': 'inbound',
             'partner_type': 'customer',
             'journal_id': journal.id,
@@ -101,7 +109,11 @@ class BinancePaymentVerification(models.Model):
             'currency_id': currency.id,
             'date': self._payment_date(),
             'ref': 'USDT REF: %s' % self._short_reference(),
-        })
+        }
+        partner = self.account_id.payment_partner_id
+        if partner:
+            values['partner_id'] = partner.id
+        payment = self.env['account.payment'].with_user(SUPERUSER_ID).with_company(journal.company_id).create(values)
         self.sudo().write({'payment_id': payment.id, 'payment_error': False})
 
     def action_create_payment(self):
