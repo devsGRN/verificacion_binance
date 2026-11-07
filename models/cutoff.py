@@ -145,19 +145,13 @@ class BinanceWhatsAppReceipt(models.Model):
 
     def _cutoff_notice_body(self):
         verification = self.verification_id.sudo()
-        base_url = self.get_base_url()
         return (
-            '🔔 Pago Binance anterior a la fecha de corte (%s)\n'
+            '⚠️Pago Binance anterior a la fecha de corte\n'
             'Gerente: +%s\n'
             'Fecha del pago (Binance): %s\n'
-            'Importe: %s %s\n'
-            'ID de orden: %s\n\n'
-            'Revisar que no esté registrado y decidir en Odoo (✅ crea el pago en borrador, ❌ no crea nada):\n'
-            '%s/web#id=%s&model=binance.whatsapp.receipt&view_type=form'
-        ) % (_format(verification.account_id.auto_register_from), self.sender,
-             _format(verification._payment_local_date()),
-             verification.confirmed_amount or verification.expected_amount, verification.currency,
-             verification.canonical_id or verification.reference, base_url, self.id)
+            'ID de orden: %s\n'
+            'Revisar que no esté registrado y decidir en Odoo'
+        ) % (self.sender, _format(verification._payment_local_date()), verification.reference)
 
     def _notify_cutoff_reviewers(self):
         """Envía el aviso a cada número configurado. Nunca interrumpe la respuesta al gerente.
