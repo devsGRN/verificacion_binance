@@ -1,6 +1,6 @@
 {
     'name': 'Pagos Binance',
-    'version': '17.0.1.0.2',
+    'version': '17.0.1.0.3',
     'summary': 'Bot de WhatsApp que verifica pagos de Binance y registra el pago en borrador en Contabilidad',
     'license': 'LGPL-3',
     'depends': ['base', 'whatsapp', 'account'],

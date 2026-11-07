@@ -3,7 +3,7 @@
 Cuando un pago queda Verificado (por el bot o por un revisor), se crea en
 Contabilidad → Clientes → Pagos un pago en BORRADOR:
   diario Binance, tipo Recibir, moneda USD, fecha del pago, importe verificado,
-  memo "USDT REF: <referencia>" y cliente vacío (lo completa contabilidad).
+  memo "USDT REF: <últimos 6 dígitos>" y cliente vacío (lo completa contabilidad).
 Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
 el motivo se ve en la verificación, con un botón para reintentarlo.
 """
@@ -77,6 +77,13 @@ class BinancePaymentVerification(models.Model):
                     _logger.exception('No se pudo crear el pago en Contabilidad de la verificación %s', record.id)
                 record.sudo().write({'payment_error': message})
 
+    def _short_reference(self):
+        """Últimos 6 dígitos del ID de orden (o la referencia completa si es más corta)."""
+        self.ensure_one()
+        reference = (self.reference or '').strip()
+        digits = ''.join(ch for ch in reference if ch.isdigit())
+        return (digits or reference)[-6:]
+
     def _create_draft_payment_one(self):
         self.ensure_one()
         journal = self.account_id.payment_journal_id
@@ -93,7 +100,7 @@ class BinancePaymentVerification(models.Model):
             'amount': amount,
             'currency_id': currency.id,
             'date': self._payment_date(),
-            'ref': 'USDT REF: %s' % self.reference,
+            'ref': 'USDT REF: %s' % self._short_reference(),
         })
         self.sudo().write({'payment_id': payment.id, 'payment_error': False})
 
