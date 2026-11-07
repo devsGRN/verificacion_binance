@@ -17,6 +17,7 @@
             <field name="company_id" string="Compañía" placeholder="Todas las compañías"/>
             <separator string="Contabilidad" colspan="2"/>
             <field name="payment_journal_id" options="{'no_create': True}"/>
+            <field name="payment_partner_id" options="{'no_create': True}"/>
 
             <div class="text-muted" colspan="2">Usa una API de solo lectura para la cuenta del UID receptor.</div>
             <div class="text-muted" colspan="2">Credenciales de consulta. Se almacenan en esta base de datos y sus copias; el ocultamiento en pantalla no es cifrado. Acceso limitado a administradores.</div>
