@@ -8,3 +8,4 @@ access_binance_account_reviewer,binance.account.reviewer,model_binance_verificat
 access_binance_verify_reviewer,binance.verify.reviewer,model_binance_payment_verification,group_binance_reviewer,1,0,0,0
 access_binance_whatsapp_receipt_reviewer,binance.whatsapp.receipt.reviewer,model_binance_whatsapp_receipt,group_binance_reviewer,1,0,0,0
 access_binance_manual_verify_wizard_reviewer,binance.manual.verify.wizard.reviewer,model_binance_manual_verify_wizard,group_binance_reviewer,1,1,1,0
+access_binance_whatsapp_note_admin,binance.whatsapp.note.admin,model_binance_whatsapp_note,base.group_system,1,1,1,1

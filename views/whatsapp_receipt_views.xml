@@ -57,6 +57,8 @@
                         </group>
                         <group string="Comprobante">
                             <field name="sender" string="WhatsApp del gerente"/>
+                            <field name="customer_name" invisible="not customer_name"/>
+                            <field name="customer_partner_id" invisible="not customer_name"/>
                             <field name="account_id" string="Cuenta receptora"/>
                             <field name="detail" string="Motivo"/>
                             <field name="before_cutoff" invisible="not before_cutoff"/>

@@ -125,6 +125,7 @@ class BinancePaymentVerification(models.Model):
         payment = self.env['account.payment'].with_user(SUPERUSER_ID).with_company(journal.company_id).create(values)
         self.sudo().write({'payment_id': payment.id, 'payment_error': False})
         self._attach_capture_to_payment()
+        self.receipt_ids._apply_customer_to_payment()
 
     def _attach_capture_to_payment(self):
         """Adjunta la captura de WhatsApp al pago en borrador y la muestra en su chatter.
@@ -173,4 +174,5 @@ class BinanceWhatsAppReceipt(models.Model):
         res = super().write(vals)
         if vals.get('verification_id'):
             self.sudo().verification_id._attach_capture_to_payment()
+            self._apply_customer_to_payment()
         return res

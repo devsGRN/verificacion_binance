@@ -5,3 +5,4 @@ from . import verification_extra
 from . import review
 from . import account_payment
 from . import cutoff
+from . import customer_name
