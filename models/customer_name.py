@@ -2,9 +2,9 @@
 
 Flujo normal: el gerente manda SOLO la captura. Si el bot la valida, después del ✅ le pide
 un nombre de referencia (por ejemplo "cañon") y el gerente tiene 3 minutos para responder.
-  - Si un solo contacto se llama exactamente así, o solo uno contiene esas palabras, se
-    asigna directo.
-  - Si hay varios, el bot los muestra numerados y el gerente responde con el número.
+  - Si solo un contacto contiene esas palabras, se asigna directo.
+  - Si hay varios (aunque uno se llame exactamente así), el bot los muestra numerados y el
+    gerente responde con el número.
   - Si no hay ninguno, el bot pide otro nombre.
 Cada pregunta del bot le da otros 3 minutos. Si no responde, queda el "Cliente por defecto"
 (POR ASIGNAR) y contabilidad lo asigna a mano. Si el nombre llega junto con la captura,
@@ -25,7 +25,7 @@ NAME_WINDOW_MINUTES = 3
 ASK_WINDOW_MINUTES = 3
 # Máximo de clientes que se muestran para elegir.
 MAX_OPTIONS = 5
-ASK_MESSAGE = '👤 ¿A qué cliente corresponde este pago? Escribe un nombre de referencia (por ejemplo: cañon).'
+ASK_MESSAGE = '👤 ¿A qué cliente corresponde este pago? Escribe un nombre de referencia.'
 REFERENCE_PATTERN = re.compile(r'[0-9]{6,32}')
 OPTION_PATTERN = re.compile(r'(?:opci[oó]n\s*)?#?\s*([0-9]{1,2})\s*[.)]?')
 
@@ -222,10 +222,8 @@ class BinanceWhatsAppReceipt(models.Model):
         if option:
             return  # un número sin lista: no es un nombre
         receipt.write({'customer_name': text})
-        partner = receipt._find_customer(text)
-        if partner:
-            receipt._assign_customer(partner, notify=talking)
-            return
+        # Siempre mostrar todos los que contienen el nombre (aunque uno se llame exactamente
+        # igual); solo se asigna directo si hay uno solo.
         found = receipt._search_customer_options(text)
         if len(found) == 1:
             receipt._assign_customer(found, notify=talking)
