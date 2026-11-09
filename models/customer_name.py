@@ -1,9 +1,10 @@
 """Cliente del pago a partir del nombre que manda el gerente por WhatsApp.
 
-Versión sencilla: si junto a la captura llega un nombre (como texto de la foto o como
-mensaje aparte, antes o después, dentro de unos minutos) y en Contactos hay UN solo
-contacto con ese mismo nombre, el pago en borrador se crea / actualiza con ese cliente
-en lugar del "Cliente por defecto". No se crean contactos nuevos: si no hay coincidencia
+Si junto a la captura llega un nombre (como texto de la foto o como mensaje aparte, antes
+o después, dentro de 3 minutos) y en Contactos hay UN solo contacto con ese mismo
+nombre, el pago en borrador se crea / actualiza con ese cliente en lugar del "Cliente por
+defecto". Solo si la captura llegó SIN nombre, después del ✅ el bot le pide el nombre al
+gerente UNA vez y espera su respuesta 3 minutos. No se crean contactos nuevos: si no hay coincidencia
 exacta (sin importar mayúsculas ni espacios de más) o hay varias, queda como está y
 contabilidad lo asigna a mano. La verificación del pago no cambia.
 """
@@ -16,7 +17,10 @@ from odoo import SUPERUSER_ID, fields, models
 _logger = logging.getLogger(__name__)
 
 # Tiempo máximo entre la captura y el mensaje con el nombre.
-NAME_WINDOW_MINUTES = 5
+NAME_WINDOW_MINUTES = 3
+# Tiempo que se espera la respuesta después de pedirle el nombre al gerente.
+ASK_WINDOW_MINUTES = 3
+ASK_MESSAGE = '👤 ¿A qué cliente corresponde este pago? Responde con el nombre tal como está en Odoo.'
 REFERENCE_PATTERN = re.compile(r'[0-9]{6,32}')
 
 
@@ -55,6 +59,7 @@ class WhatsAppAccount(models.Model):
         Receipt = self.env['binance.whatsapp.receipt'].sudo()
         Note = self.env['binance.whatsapp.note'].sudo()
         since = fields.Datetime.now() - timedelta(minutes=NAME_WINDOW_MINUTES)
+        asked_since = fields.Datetime.now() - timedelta(minutes=ASK_WINDOW_MINUTES)
         for account in self:
             receivers = self.env['binance.verification.account'].sudo().search([
                 ('whatsapp_account_id', '=', account.id), ('whatsapp_mode', '!=', 'disabled'),
@@ -85,12 +90,19 @@ class WhatsAppAccount(models.Model):
                     name = _clean_name(message.get('text', {}).get('body'))
                     if not name or REFERENCE_PATTERN.fullmatch(re.sub(r'[\s.\-]', '', name)):
                         continue  # vacío o los dígitos del ID de orden
-                    receipt = Receipt.search([
-                        ('whatsapp_account_id', '=', account.id), ('sender', '=', sender),
-                        ('customer_partner_id', '=', False), ('create_date', '>=', since),
-                    ], order='id desc', limit=1)
+                    base = [('whatsapp_account_id', '=', account.id), ('sender', '=', sender),
+                            ('customer_partner_id', '=', False)]
+                    # Primero la captura a la que el bot le pidió el nombre; si no, una reciente.
+                    receipt = Receipt.search(base + [('customer_asked_at', '>=', asked_since)],
+                                             order='customer_asked_at desc', limit=1) \
+                        or Receipt.search(base + [('create_date', '>=', since)], order='id desc', limit=1)
                     if receipt:
-                        receipt._set_customer_name(name)
+                        found = receipt._set_customer_name(name)
+                        if receipt.customer_asked_at:
+                            receipt._send_to_manager(
+                                '👤 Cliente asignado: %s' % receipt.customer_partner_id.display_name if found
+                                else '⚠️ No encontré el cliente "%s" en Odoo. Escríbelo exactamente como '
+                                     'está registrado; si no, contabilidad lo asignará.' % name)
                     else:
                         Note.create({'whatsapp_account_id': account.id, 'sender': sender, 'text': name})
 
@@ -101,6 +113,44 @@ class BinanceWhatsAppReceipt(models.Model):
     customer_name = fields.Char(string='Cliente escrito por el gerente', readonly=True, copy=False)
     customer_partner_id = fields.Many2one(
         'res.partner', string='Cliente encontrado', readonly=True, copy=False, ondelete='set null')
+    customer_asked_at = fields.Datetime(string='Nombre pedido al gerente', readonly=True, copy=False)
+
+    def _post_reply(self):
+        already = self.final_reply
+        res = super()._post_reply()
+        # Recién se envió el ✅ (o el aviso de pago anterior al corte) y no hay cliente: pedirlo una vez.
+        just_answered = (self.final_reply == 'confirmed' and not already) or (
+            self.before_cutoff and self.state == 'pending' and self.reply_state == 'posted')
+        # Solo si el gerente no mandó ningún nombre con la captura.
+        if just_answered and not self.customer_name and not self.customer_asked_at:
+            try:
+                with self.env.cr.savepoint():
+                    if self._send_to_manager(ASK_MESSAGE):
+                        self.customer_asked_at = fields.Datetime.now()
+            except Exception:
+                _logger.exception('No se pudo pedir el nombre del cliente del comprobante %s', self.id)
+        return res
+
+    def _send_to_manager(self, body):
+        """Escribe al gerente en el mismo chat de WhatsApp de la captura."""
+        self.ensure_one()
+        incoming = self.env['whatsapp.message'].sudo().search([
+            ('msg_uid', '=', self.message_uid), ('wa_account_id', '=', self.whatsapp_account_id.id),
+        ], order='id desc', limit=1).mail_message_id
+        if incoming.model != 'discuss.channel':
+            return False
+        channel = self.env['discuss.channel'].sudo().browse(incoming.res_id).exists()
+        if not channel or channel.channel_type != 'whatsapp':
+            return False
+        try:
+            with self.env.cr.savepoint():
+                posted = channel.message_post(body=body, message_type='whatsapp_message',
+                                              subtype_xmlid='mail.mt_comment')
+                self._send_whatsapp_now(posted)
+            return True
+        except Exception:
+            _logger.exception('No se pudo escribir al gerente del comprobante %s', self.id)
+            return False
 
     def _find_customer(self, name):
         """Un solo contacto con exactamente ese nombre (sin importar mayúsculas)."""
