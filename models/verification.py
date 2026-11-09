@@ -138,7 +138,7 @@ class BinancePaymentVerification(models.Model):
         return super().create(safe)
 
     # Campos del sistema que se pueden escribir en un pago ya verificado (no tocan el resultado).
-    _SYSTEM_FIELDS = {'payment_id', 'payment_error'}
+    _SYSTEM_FIELDS = {'payment_id', 'payment_error', 'payment_capture_attached'}
 
     def write(self, vals):
         if vals and vals.keys() <= self._SYSTEM_FIELDS:

@@ -8,6 +8,7 @@ Contabilidad → Clientes → Pagos un pago en BORRADOR:
   Contabilidad reemplaza ese cliente por el real antes de confirmar.
 Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
 el motivo se ve en la verificación, con un botón para reintentarlo.
+La captura que mandó el gerente por WhatsApp se adjunta al pago y se muestra en su chatter.
 """
 import logging
 from zoneinfo import ZoneInfo
@@ -52,6 +53,7 @@ class BinancePaymentVerification(models.Model):
         groups='account.group_account_invoice,account.group_account_readonly',
     )
     payment_error = fields.Char(string='Error al crear el pago', readonly=True, copy=False)
+    payment_capture_attached = fields.Boolean(readonly=True, copy=False)
     has_payment = fields.Boolean(string='Pago creado', compute='_compute_has_payment')
 
     def _compute_has_payment(self):
@@ -122,6 +124,33 @@ class BinancePaymentVerification(models.Model):
             values['partner_id'] = partner.id
         payment = self.env['account.payment'].with_user(SUPERUSER_ID).with_company(journal.company_id).create(values)
         self.sudo().write({'payment_id': payment.id, 'payment_error': False})
+        self._attach_capture_to_payment()
+
+    def _attach_capture_to_payment(self):
+        """Adjunta la captura de WhatsApp al pago en borrador y la muestra en su chatter.
+
+        Se llama al crear el pago y también cuando el comprobante se enlaza después a la
+        verificación (en el bot el pago se crea un instante antes de ese enlace).
+        Nunca interrumpe nada: si falla, solo queda en el log."""
+        for record in self.sudo().filtered(lambda r: r.payment_id and not r.payment_capture_attached):
+            receipt = record.receipt_ids.filtered('attachment_id')[:1]
+            if not receipt:
+                continue
+            try:
+                with self.env.cr.savepoint():
+                    source = receipt.attachment_id.sudo()
+                    capture = source.copy({
+                        'res_model': 'account.payment', 'res_id': record.payment_id.id,
+                        'name': source.name or 'captura_binance.jpg',
+                    })
+                    record.payment_id.with_user(SUPERUSER_ID).message_post(
+                        body='Captura del pago Binance enviada por WhatsApp (+%s).' % receipt.sender,
+                        attachment_ids=capture.ids,
+                        message_type='comment', subtype_xmlid='mail.mt_note',
+                    )
+                    record.write({'payment_capture_attached': True})
+            except Exception:
+                _logger.exception('No se pudo adjuntar la captura al pago de la verificación %s', record.id)
 
     def action_create_payment(self):
         if not self.env.user.has_group('base.group_system'):
@@ -135,3 +164,13 @@ class BinancePaymentVerification(models.Model):
         self.ensure_one()
         return {'type': 'ir.actions.act_window', 'res_model': 'account.payment',
                 'res_id': self.sudo().payment_id.id, 'view_mode': 'form', 'target': 'current'}
+
+
+class BinanceWhatsAppReceipt(models.Model):
+    _inherit = 'binance.whatsapp.receipt'
+
+    def write(self, vals):
+        res = super().write(vals)
+        if vals.get('verification_id'):
+            self.sudo().verification_id._attach_capture_to_payment()
+        return res
