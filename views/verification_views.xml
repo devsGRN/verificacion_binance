@@ -22,6 +22,8 @@
             <separator string="Contabilidad" colspan="2"/>
             <field name="payment_journal_id" options="{'no_create': True}"/>
             <field name="payment_partner_id" options="{'no_create': True}"/>
+            <field name="pagos_action_id" options="{'no_create': True}"/>
+            <div class="text-muted" colspan="2">Menú de Pagos: el menú del aplicativo "Pagos". En Verificaciones se muestra si cada pago en borrador aparece ahí (según el mismo filtro de ese menú).</div>
 
             <div class="text-muted" colspan="2">Usa una API de solo lectura para la cuenta del UID receptor.</div>
             <div class="text-muted" colspan="2">Credenciales de consulta. Se almacenan en esta base de datos y sus copias; el ocultamiento en pantalla no es cifrado. Acceso limitado a administradores.</div>
@@ -41,6 +43,9 @@
             <field name="checked_at"/>
             <field name="received_amount" optional="show"/>
             <field name="payment_id" optional="show" groups="account.group_account_invoice,account.group_account_readonly"/>
+            <field name="pagos_state" optional="show" widget="badge"
+                   decoration-success="pagos_state == 'visible'"
+                   decoration-danger="pagos_state == 'hidden'"/>
         </tree></field>
     </record>
     <record id="view_binance_verification_form" model="ir.ui.view">
@@ -56,6 +61,18 @@
                 <field name="state" widget="statusbar" statusbar_visible="draft,pending,confirmed"/>
                 <field name="has_payment" invisible="1"/></header>
             <sheet>
+                <field name="pagos_state" invisible="1"/>
+                <div class="alert alert-warning d-flex align-items-center justify-content-between" role="alert"
+                     invisible="pagos_state != 'hidden'">
+                    <span>⚠️ Este pago no aparece en el aplicativo Pagos. <field name="pagos_message" class="oe_inline" readonly="1"/></span>
+                    <span>
+                        <button name="action_open_payment_partner" string="Abrir contacto" type="object"
+                                class="btn btn-sm btn-secondary me-1" invisible="not payment_partner_id"/>
+                        <button name="action_open_payment" string="Abrir pago" type="object" class="btn btn-sm btn-secondary"
+                                groups="account.group_account_invoice,account.group_account_readonly"/>
+                    </span>
+                    <field name="payment_partner_id" invisible="1"/>
+                </div>
                 <div class="oe_title" invisible="state != 'confirmed'">
                     <div class="text-muted">Importe recibido</div>
                     <h1><field name="received_amount" class="oe_inline" readonly="1"/> <field name="currency" class="oe_inline" readonly="1"/></h1>
@@ -100,6 +117,16 @@
                 </notebook>
             </sheet>
         </form></field>
+    </record>
+    <record id="view_binance_verification_search" model="ir.ui.view">
+        <field name="name">binance.payment.verification.search</field>
+        <field name="model">binance.payment.verification</field>
+        <field name="arch" type="xml"><search>
+            <field name="reference" string="ID de orden"/>
+            <filter name="not_in_pagos" string="No visibles en Pagos" domain="[('pagos_state', '=', 'hidden')]"/>
+            <filter name="confirmed" string="Verificados" domain="[('state', '=', 'confirmed')]"/>
+            <filter name="pending" string="Pendientes" domain="[('state', '=', 'pending')]"/>
+        </search></field>
     </record>
     <record id="action_binance_account" model="ir.actions.act_window">
         <field name="name">Cuentas receptoras</field><field name="res_model">binance.verification.account</field><field name="view_mode">tree,form</field>

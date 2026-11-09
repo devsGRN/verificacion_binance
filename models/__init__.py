@@ -6,3 +6,4 @@ from . import review
 from . import account_payment
 from . import cutoff
 from . import customer_name
+from . import pagos_visibility
