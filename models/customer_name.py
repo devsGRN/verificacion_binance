@@ -2,9 +2,10 @@
 
 Flujo normal: el gerente manda SOLO la captura. Si el bot la valida, después del ✅ le pide
 un nombre de referencia (por ejemplo "cañon") y el gerente tiene 3 minutos para responder.
-  - Si solo un contacto contiene esas palabras, se asigna directo.
   - Si hay varios (aunque uno se llame exactamente así), el bot los muestra numerados y el
     gerente responde con el número.
+  - Siempre (aunque haya uno solo) el bot pide confirmar: "¿Confirmas que este pago es
+    para X? Responde SI o NO". Con SI se asigna; con NO pide otro nombre.
   - Si no hay ninguno, el bot pide otro nombre.
 Cada pregunta del bot le da otros 3 minutos. Si no responde, queda el "Cliente por defecto"
 (POR ASIGNAR) y contabilidad lo asigna a mano. Si el nombre llega junto con la captura,
@@ -27,6 +28,8 @@ ASK_WINDOW_MINUTES = 3
 MAX_OPTIONS = 5
 ASK_MESSAGE = '👤 ¿A qué cliente corresponde este pago? Escribe un nombre de referencia.'
 REFERENCE_PATTERN = re.compile(r'[0-9]{6,32}')
+YES_WORDS = {'si', 'sí', 's', 'yes', 'ok', 'okey', 'dale', 'confirmo', 'correcto', 'listo', '👍', '✅'}
+NO_WORDS = {'no', 'n', 'nop', 'negativo', '❌', '👎'}
 OPTION_PATTERN = re.compile(r'(?:opci[oó]n\s*)?#?\s*([0-9]{1,2})\s*[.)]?')
 
 
@@ -122,6 +125,8 @@ class BinanceWhatsAppReceipt(models.Model):
     customer_option_ids = fields.Many2many(
         'res.partner', 'binance_receipt_customer_option_rel', 'receipt_id', 'partner_id',
         string='Opciones mostradas al gerente', readonly=True, copy=False)
+    customer_pending_id = fields.Many2one(
+        'res.partner', string='Cliente por confirmar', readonly=True, copy=False, ondelete='set null')
 
     def _post_reply(self):
         already = self.final_reply
@@ -132,7 +137,9 @@ class BinanceWhatsAppReceipt(models.Model):
         if just_answered and not self.customer_partner_id and not self.customer_asked_at:
             try:
                 with self.env.cr.savepoint():
-                    if self.customer_option_ids:
+                    if self.customer_pending_id:
+                        body = self._confirm_message()
+                    elif self.customer_option_ids:
                         body = self._options_message()
                     elif self.customer_name:
                         body = self._not_found_message(self.customer_name)
@@ -196,6 +203,10 @@ class BinanceWhatsAppReceipt(models.Model):
             lines.append('Hay más resultados; si no está, escribe el nombre más completo.')
         return '\n'.join(lines)
 
+    def _confirm_message(self):
+        return ('👤 ¿Confirmas que este pago es para *%s*? Responde SI o NO.'
+                % self.customer_pending_id.name)
+
     def _not_found_message(self, name):
         return '⚠️ No encontré clientes con "%s". Escribe otro nombre de referencia.' % name
 
@@ -210,12 +221,28 @@ class BinanceWhatsAppReceipt(models.Model):
         if receipt.customer_partner_id:
             return
         talking = bool(receipt.customer_asked_at)
+        answer = text.lower().strip(' .!¡¿?')
+        if receipt.customer_pending_id:
+            # Esperando que el gerente confirme el cliente.
+            if answer in YES_WORDS:
+                receipt._assign_customer(receipt.customer_pending_id, notify=talking)
+                return
+            if answer in NO_WORDS:
+                receipt.write({'customer_pending_id': False})
+                if talking:
+                    receipt._ask_again('👤 Entendido. Escribe otro nombre de referencia del cliente.')
+                return
+            if OPTION_PATTERN.fullmatch(answer):
+                if talking:
+                    receipt._ask_again('Responde SI o NO.')
+                return
+            receipt.write({'customer_pending_id': False})  # escribió otro nombre: buscar de nuevo
         option = OPTION_PATTERN.fullmatch(text.lower())
         if option and receipt.customer_option_ids:
             index = int(option.group(1))
             options = receipt.customer_option_ids
             if 1 <= index <= len(options):
-                receipt._assign_customer(options[index - 1], notify=talking)
+                receipt._propose_customer(options[index - 1], notify=talking)
             elif talking:
                 receipt._ask_again('Responde con un número del 1 al %s.' % len(options))
             return
@@ -226,7 +253,7 @@ class BinanceWhatsAppReceipt(models.Model):
         # igual); solo se asigna directo si hay uno solo.
         found = receipt._search_customer_options(text)
         if len(found) == 1:
-            receipt._assign_customer(found, notify=talking)
+            receipt._propose_customer(found, notify=talking)
             return
         more = len(found) > MAX_OPTIONS
         receipt.write({'customer_option_ids': [(6, 0, found[:MAX_OPTIONS].ids)]})
@@ -240,8 +267,15 @@ class BinanceWhatsAppReceipt(models.Model):
         if self._send_to_manager(body):
             self.customer_asked_at = fields.Datetime.now()
 
+    def _propose_customer(self, partner, notify=False):
+        """El gerente eligió (o solo hay uno): pedirle que confirme antes de asignarlo."""
+        self.write({'customer_pending_id': partner.id, 'customer_option_ids': [(5, 0, 0)]})
+        if notify:
+            self._ask_again(self._confirm_message())
+
     def _assign_customer(self, partner, notify=False):
-        self.write({'customer_partner_id': partner.id, 'customer_option_ids': [(5, 0, 0)]})
+        self.write({'customer_partner_id': partner.id, 'customer_pending_id': False,
+                    'customer_option_ids': [(5, 0, 0)]})
         self._apply_customer_to_payment()
         if notify:
             self._send_to_manager('👤 Cliente asignado: %s' % partner.name)
