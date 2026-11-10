@@ -60,6 +60,84 @@ def _find_orders(text):
     return set(LONG_NUMBER_RE.findall(without_dates))
 
 
+# --- Depósitos por red (retiro de quien paga / depósito de quien recibe) -----------------
+DEPOSIT_SCREEN_RE = re.compile(
+    r'Detalles?\s*de\s*(?:Dep[oó]sito|Retiro)|Deposit\s*Details|Withdraw(?:al)?\s*Details'
+    r'|\bTx\s*id\b|Transferencia\s*fuera\s*de\s*la\s*cadena|Off[\s-]*chain', re.I)
+IN_PROCESS_RE = re.compile(r'Retiro\s*en\s*proceso|Withdrawal\s*(?:processing|in\s*progress)', re.I)
+OFFCHAIN_RE = re.compile(
+    r'(?:fuera\s*de\s*la\s*cadena|off[\s-]*chain\s*transfer|internal\s*transfer)\s*:?\s*([0-9]{6,32})', re.I)
+HEX_LINE_RE = re.compile(r'^(0x)?[0-9a-f]+$', re.I)
+NETWORK_RE = re.compile(
+    r'\b(TRX|TRC20|TRON|BSC|BEP20|ETH|ERC20|SOL|MATIC|POLYGON|ARBITRUM|OPBNB|TON|AVAXC|BASE|OPTIMISM)\b', re.I)
+NETWORK_ALIASES = {'TRC20': 'TRX', 'TRON': 'TRX', 'BEP20': 'BSC', 'ERC20': 'ETH', 'POLYGON': 'MATIC'}
+
+
+def normalize_network(name):
+    name = (name or '').strip().upper()
+    return NETWORK_ALIASES.get(name, name)
+
+
+def _find_txid(text):
+    """Txid de la captura: 'fuera de la cadena 123…' o un hash hexadecimal (que el OCR suele
+    partir en varias líneas). La dirección (0x + 40) no se confunde con el hash (0x + 64)."""
+    offchain = OFFCHAIN_RE.search(text)
+    if offchain:
+        return 'offchain-%s' % offchain.group(1)
+    runs, current = [], ''
+    for line in text.splitlines():
+        line = re.sub(r'\s+', '', line)
+        if line and HEX_LINE_RE.match(line) and len(line) >= 6:
+            if line.lower().startswith('0x') and current:
+                runs.append(current)
+                current = ''
+            current += line
+        else:
+            if current:
+                runs.append(current)
+            current = ''
+    if current:
+        runs.append(current)
+    hashes = {run.lower() for run in runs
+              if re.fullmatch(r'0x[0-9a-f]{64}', run, re.I) or re.fullmatch(r'[0-9a-f]{64}', run, re.I)}
+    return hashes.pop() if len(hashes) == 1 else None
+
+
+def extract_deposit(text, timezone_name):
+    """None si la captura no es de un depósito/retiro por red."""
+    if not DEPOSIT_SCREEN_RE.search(text) and not IN_PROCESS_RE.search(text):
+        return None
+    txid = _find_txid(text)
+    if not txid:
+        return {'kind': 'deposit_in_process' if IN_PROCESS_RE.search(text) else 'deposit_unreadable'}
+    found = [(sign, _normalize_amount(value), currency.upper())
+             for sign, value, currency in AMOUNT_RE.findall(text)]
+    signed = {(value, currency) for sign, value, currency in found if sign in '+-' and sign}
+    amounts = signed or {(value, currency) for _sign, value, currency in found
+                         if _normalize_amount(value) not in ('0', '0.0', '0.00')}
+    if len(amounts) != 1:
+        return {'kind': 'deposit_unreadable'}
+    amount, currency = amounts.pop()
+    networks = {normalize_network(item) for item in NETWORK_RE.findall(text)}
+    operation_day = None
+    dates = sorted(set(DATE_RE.findall(text)))
+    if dates:
+        day, clock_time = dates[0]
+        try:
+            local_time = datetime.fromisoformat(f'{day}T{clock_time}').replace(tzinfo=ZoneInfo(timezone_name))
+            operation_day = local_time.astimezone(timezone.utc).date()
+        except (ValueError, ZoneInfoNotFoundError):
+            operation_day = None
+    return {
+        'kind': 'deposit',
+        'reference': txid,
+        'operation_day': operation_day,
+        'currency': currency,
+        'expected_amount': amount.lstrip('+-'),
+        'network': networks.pop() if len(networks) == 1 else '',
+    }
+
+
 def extract_receipt(text, timezone_name, *, allow_missing_reference=False):
     orders = _find_orders(text)
     dates = set(DATE_RE.findall(text))
@@ -133,6 +211,8 @@ def read_receipt(image_data, timezone_name, *, allow_missing_reference=False):
             result = engine(buffer.getvalue())
     except Exception as error:
         raise ReceiptError('El motor OCR no pudo leer la imagen. Revisa la instalación y los modelos del build.') from error
-    return extract_receipt(
-        '\n'.join(result.txts or ()), timezone_name, allow_missing_reference=allow_missing_reference,
-    )
+    text = '\n'.join(result.txts or ())
+    deposit = extract_deposit(text, timezone_name)
+    if deposit:
+        return deposit
+    return extract_receipt(text, timezone_name, allow_missing_reference=allow_missing_reference)

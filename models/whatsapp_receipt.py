@@ -147,6 +147,7 @@ class BinanceWhatsAppReceipt(models.Model):
     detail = fields.Char(readonly=True)
     awaiting_reference = fields.Boolean(readonly=True, copy=False)
     needs_new_image = fields.Boolean(readonly=True, copy=False)
+    deposit_in_process = fields.Boolean(string='Retiro en proceso', readonly=True, copy=False)
     reference_requested_at = fields.Datetime(readonly=True, copy=False)
     reference_message_uid = fields.Char(readonly=True, copy=False)
     supplied_reference = fields.Char(readonly=True, copy=False)
@@ -388,6 +389,9 @@ class BinanceWhatsAppReceipt(models.Model):
                 allow_missing_reference=True,
             )
             self._remember_reading(values)  # para mostrárselo a quien revise
+            if str(values.get('kind', '')).startswith('deposit'):
+                self._process_deposit(candidates, values)
+                return
         except ReceiptError as error:
             if not self.supplied_reference:
                 # Captura ilegible: pedir el ID de orden por WhatsApp sobre esta misma fila.
@@ -608,6 +612,12 @@ class BinanceWhatsAppReceipt(models.Model):
             )
         elif in_review:
             body = self._in_review_message()
+        elif request_image and self.deposit_in_process:
+            body = ('⏳ Este retiro aún está en proceso. Envía la captura de "Detalle de Retiro" '
+                    'cuando diga Completado.')
+        elif request_image and self.detail and self.detail.startswith('Depósito:'):
+            body = ('No pudimos leer el Txid o el monto. Envía una captura completa de "Detalle de '
+                    'Retiro" o "Detalles de Depósito" donde se vea el Txid.')
         elif request_image:
             body = (
                 'No hemos podido leer la fecha o el importe del comprobante. '
@@ -624,6 +634,72 @@ class BinanceWhatsAppReceipt(models.Model):
             self.final_reply = verdict
         if request_reference:
             self.reference_requested_at = fields.Datetime.now()
+
+    def _process_deposit(self, candidates, values):
+        """Captura de "Detalle de Retiro" / "Detalles de Depósito": se verifica en el historial
+        de depósitos de la cuenta receptora por Txid, importe y red."""
+        kind = values.get('kind')
+        if kind in ('deposit_in_process', 'deposit_unreadable'):
+            self.write({
+                'state': 'pending', 'needs_new_image': True, 'reply_state': 'queued',
+                'deposit_in_process': kind == 'deposit_in_process',
+                'detail': ('Depósito: el retiro aún está en proceso; se pidió la captura completada.'
+                           if kind == 'deposit_in_process' else
+                           'Depósito: no se leyó el Txid o el importe; se pidió otra captura.'),
+            })
+            return
+        verifications = self.env['binance.payment.verification']
+        matches, problems, unavailable = [], [], 0
+        for account in candidates:
+            try:
+                result = account._binance_reader().verify_deposit(
+                    values['reference'], values.get('currency'), values.get('expected_amount'),
+                    values.get('network'), values.get('operation_day'))
+            except VerificationUnavailable as error:
+                unavailable += 1
+                problems.append(str(error))
+                continue
+            if result.state == 'confirmed':
+                matches.append((account, result))
+            elif result.state == 'mismatch':
+                problems.append(result.message)
+        if len(matches) != 1:
+            if not matches and unavailable == len(candidates):
+                self._retry(problems[0] if problems else 'Consulta de depósitos no disponible.')
+                return
+            detail = ('El depósito coincide en varias cuentas. Requiere revisión.' if matches else
+                      problems[0] if problems else 'Depósito no localizado en las cuentas habilitadas.')
+            self.write({'state': 'pending', 'detail': 'Depósito: %s' % detail, 'reply_state': 'queued'})
+            return
+        account, result = matches[0]
+        record_values = {
+            'reference': values['reference'],
+            'operation_day': result.operation_day or values.get('operation_day') or fields.Date.today(),
+            'currency': result.currency or values.get('currency') or 'USDT',
+            'expected_amount': values.get('expected_amount') or result.amount,
+            'network': result.network or values.get('network') or 'N/A',
+        }
+        link_values = {key: record_values[key] for key in ('currency', 'expected_amount', 'operation_day')}
+        existing = verifications.search([
+            ('account_id', '=', account.id), ('kind', '=', 'deposit'),
+            ('canonical_id', '=', result.canonical_id), ('state', '=', 'confirmed'),
+        ], limit=1)
+        if existing:
+            self._link_confirmed_verification(existing, {
+                'currency': existing.currency, 'expected_amount': existing.expected_amount,
+                'operation_day': existing.operation_day,
+            })
+            return
+        record = verifications.search([
+            ('account_id', '=', account.id), ('kind', '=', 'deposit'),
+            ('reference', '=', values['reference']),
+        ], limit=1) or verifications.create(dict(
+            record_values, account_id=account.id, kind='deposit',
+            company_id=(account.company_id or self.env.company).id))
+        self._link_confirmed_verification(record, {
+            'currency': record.currency, 'expected_amount': record.expected_amount,
+            'operation_day': record.operation_day,
+        } if record.state == 'confirmed' else link_values, result=result)
 
     def _in_review_message(self):
         return '🕐 No pudimos validar su pago automáticamente. Un agente lo revisará en breve.'
@@ -727,7 +803,7 @@ class BinanceManualVerifyWizard(models.TransientModel):
             raise UserError('Este pago ya está verificado (con el ID abreviado %s). No se puede usar dos veces.'
                             % short.reference)
         existing = verifications.search([
-            ('account_id', '=', self.account_id.id), ('kind', '=', 'pay'),
+            ('account_id', '=', self.account_id.id), ('kind', 'in', ('pay', 'deposit')),
             '|', ('reference', '=', reference), ('canonical_id', '=', reference),
         ], limit=1)
         if existing.state == 'confirmed':

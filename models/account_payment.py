@@ -98,6 +98,8 @@ class BinancePaymentVerification(models.Model):
         """Últimos 6 dígitos del ID de orden (o la referencia completa si es más corta)."""
         self.ensure_one()
         reference = (self.reference or '').strip()
+        if self.kind == 'deposit' and not reference.startswith('offchain-'):
+            return reference[-6:].upper()  # hash del depósito: últimos 6 caracteres
         digits = ''.join(ch for ch in reference if ch.isdigit())
         return (digits or reference)[-6:]
 

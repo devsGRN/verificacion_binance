@@ -67,6 +67,7 @@ class Result:
     currency: str = ''
     operation_day: date | None = None
     paid_at: datetime | None = None  # hora real del pago según Binance (UTC)
+    network: str = ''
 
 
 def evaluate(kind, records, reference, currency, expected_amount, receiver_uid,
@@ -300,6 +301,65 @@ class BinanceReader:
         return found, truncated
 
     SEARCH_DAYS = 30
+    NETWORK_ALIASES = {'TRC20': 'TRX', 'TRON': 'TRX', 'BEP20': 'BSC', 'ERC20': 'ETH', 'POLYGON': 'MATIC'}
+
+    @staticmethod
+    def _deposit_key(value):
+        """'Off-chain transfer 123' / 'offchain-123' -> 'offchain:123'; hash -> hash en minúsculas."""
+        value = str(value or '').strip().lower()
+        if 'off' in value and 'chain' in value or value.startswith('internal transfer'):
+            digits = ''.join(ch for ch in value if ch.isdigit())
+            return 'offchain:%s' % digits if digits else value
+        return value.replace(' ', '')
+
+    def verify_deposit(self, reference, currency, amount, network, operation_day):
+        """Depósito por red (incluidas transferencias internas "fuera de la cadena").
+        Busca en el historial de depósitos alrededor de la fecha de la captura."""
+        expected = positive_decimal(amount) if amount else None
+        now = datetime.now(timezone.utc)
+        params = {'limit': 1000}
+        if currency:
+            params['coin'] = currency
+        if operation_day:
+            start = datetime.combine(operation_day, time.min, timezone.utc) - timedelta(days=1)
+            end = min(start + timedelta(days=3), now)
+            params.update(startTime=int(start.timestamp() * 1000), endTime=int(end.timestamp() * 1000))
+        rows = self._get('/sapi/v1/capital/deposit/hisrec', params)
+        if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
+            raise VerificationUnavailable('Formato de registros no reconocido.')
+        key = self._deposit_key(reference)
+        matches = [row for row in rows if self._deposit_key(row.get('txId')) == key]
+        if len(matches) != 1:
+            message = ('Referencia ambigua; requiere revisión.' if matches else
+                       'Depósito no localizado en la consulta; no equivale a pago rechazado.')
+            return Result('pending', message, incomplete=len(rows) >= 1000 or len(matches) > 1)
+        row = matches[0]
+        coin = str(row.get('coin') or '')
+        if currency and coin != currency:
+            return Result('mismatch', 'La moneda del depósito no coincide.')
+        try:
+            actual = positive_decimal(row.get('amount'))
+        except ValueError:
+            return Result('pending', 'El registro no acredita un depósito positivo válido.')
+        if expected is not None and actual != expected:
+            return Result('mismatch', 'El importe del depósito no coincide con el de la captura.')
+        row_network = str(row.get('network') or '')
+        wanted = self.NETWORK_ALIASES.get((network or '').upper(), (network or '').upper())
+        if wanted and self.NETWORK_ALIASES.get(row_network.upper(), row_network.upper()) != wanted:
+            return Result('mismatch', 'La red del depósito no coincide.')
+        # 1 = completado. Status 6 (acreditado pero bloqueado) no se acepta.
+        if str(row.get('status')) != '1' or str(row.get('travelRuleStatus', '0')) not in ('0', 'None', ''):
+            return Result('pending', 'Depósito sin estado final utilizable confirmado.')
+        canonical = str(row.get('id') or '')
+        if not canonical:
+            return Result('pending', 'La respuesta no incluye un identificador del depósito.')
+        try:
+            paid_at = datetime.fromtimestamp(int(row.get('completeTime') or row['insertTime']) / 1000, timezone.utc)
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            paid_at = None
+        return Result('confirmed', 'Depósito verificado en Binance', 'dep-%s' % canonical, format(actual, 'f'),
+                      currency=coin, operation_day=paid_at.date() if paid_at else operation_day,
+                      paid_at=paid_at, network=row_network)
 
     def verify(self, kind, reference, currency, amount, receiver_uid, operation_day, network=''):
         if kind not in ('pay', 'deposit'):
