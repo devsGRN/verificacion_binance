@@ -6,7 +6,7 @@ Contabilidad → Clientes → Pagos un pago en BORRADOR:
   memo "USDT REF: <últimos 6 dígitos>" y el "Cliente por defecto" de la cuenta
   receptora (por ejemplo "BINANCE - POR ASIGNAR"); si no hay, el cliente queda vacío.
   Contabilidad reemplaza ese cliente por el real antes de confirmar.
-Solo para ABONOS: los pagos de vitrina (el gerente responde "2" en WhatsApp) solo se
+Solo para ABONOS: los pagos de contado (el gerente responde "2" en WhatsApp) solo se
 verifican y no se registran. Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
 el motivo se ve en la verificación, con un botón para reintentarlo.
 La captura que mandó el gerente por WhatsApp se adjunta al pago y se muestra en su chatter.
@@ -57,8 +57,8 @@ class BinancePaymentVerification(models.Model):
     payment_capture_attached = fields.Boolean(readonly=True, copy=False)
     has_payment = fields.Boolean(string='Pago creado', compute='_compute_has_payment')
     payment_type = fields.Selection(
-        [('abono', 'Abono'), ('vitrina', 'Pago de vitrina')], string='Tipo', readonly=True, copy=False,
-        help='Abono: se registra en Pagos. Pago de vitrina: solo se verifica; no se registra en Pagos.')
+        [('abono', 'Abono'), ('vitrina', 'Pago de contado')], string='Tipo', readonly=True, copy=False,
+        help='Abono: se registra en Pagos. Pago de contado: solo se verifica; no se registra en Pagos.')
 
     def _compute_has_payment(self):
         for record in self:
@@ -173,7 +173,7 @@ class BinancePaymentVerification(models.Model):
         if not self.env.user.has_group('base.group_system'):
             raise UserError('Solo un administrador puede crear el pago en Contabilidad.')
         if self.sudo().filtered(lambda r: r.payment_type == 'vitrina'):
-            raise UserError('Es un pago de vitrina: solo se verifica y no se registra en Pagos.')
+            raise UserError('Es un pago de contado: solo se verifica y no se registra en Pagos.')
         self._default_to_abono()
         self._create_draft_payment()
         failed = self.sudo().filtered(lambda r: not r.payment_id and r.payment_error)

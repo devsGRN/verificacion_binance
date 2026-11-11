@@ -1,8 +1,8 @@
 """Cliente del pago a partir de un nombre de referencia que manda el gerente por WhatsApp.
 
 Flujo normal: el gerente manda SOLO la captura. Si el bot la valida, después del ✅ pregunta
-si es un abono (1) o un pago de vitrina (2):
-  - Vitrina: solo queda la verificación en Pagos Binance; no se registra en Pagos.
+si es un abono (1) o un pago de contado (2):
+  - Contado: solo queda la verificación en Pagos Binance; no se registra en Pagos.
   - Abono (o sin respuesta en 3 minutos): se registra en Pagos y, si respondió "1", le pide
 un nombre de referencia (por ejemplo "cañon") y el gerente tiene 3 minutos para responder.
   - Si hay varios (aunque uno se llame exactamente así), el bot los muestra numerados y el
@@ -30,9 +30,9 @@ ASK_WINDOW_MINUTES = 3
 # Máximo de clientes que se muestran para elegir.
 MAX_OPTIONS = 5
 ASK_MESSAGE = '👤 ¿A qué cliente corresponde este pago? Escribe un nombre de referencia.'
-TYPE_MESSAGE = ('🧾 ¿Este pago es un abono o un pago de vitrina? Responde con el número:\n'
-                '1. Abono\n2. Pago de vitrina')
-VITRINA_MESSAGE = '🛍️ Pago de vitrina verificado. No se registra en Pagos.'
+TYPE_MESSAGE = ('🧾 ¿Este pago es un abono o un pago de contado? Responde con el número:\n'
+                '1. Abono\n2. Pago de contado')
+VITRINA_MESSAGE = '🛍️ Pago de contado verificado. No se registra en Pagos.'
 REFERENCE_PATTERN = re.compile(r'[0-9]{6,32}')
 YES_WORDS = {'si', 'sí', 's', 'yes', 'ok', 'okey', 'dale', 'confirmo', 'correcto', 'listo', '👍', '✅'}
 NO_WORDS = {'no', 'n', 'nop', 'negativo', '❌', '👎'}
@@ -171,7 +171,7 @@ class BinanceWhatsAppReceipt(models.Model):
                 _logger.exception('No se pudo preguntar el tipo de pago del comprobante %s', self.id)
         return res
 
-    # --- ¿Abono o pago de vitrina? -------------------------------------------
+    # --- ¿Abono o pago de contado? -------------------------------------------
 
     def _handle_type_text(self, text):
         receipt = self.sudo()
@@ -181,14 +181,14 @@ class BinanceWhatsAppReceipt(models.Model):
         number = option.group(1) if option else ''
         if number == '1' or answer.startswith('abono'):
             receipt._set_payment_type('abono', notify=True)
-        elif number == '2' or 'vitrina' in answer:
+        elif number == '2' or 'contado' in answer or 'vitrina' in answer:
             receipt._set_payment_type('vitrina', notify=True)
-        elif receipt._send_to_manager('Responde 1 (Abono) o 2 (Pago de vitrina).'):
+        elif receipt._send_to_manager('Responde 1 (Abono) o 2 (Pago de contado).'):
             receipt.type_asked_at = fields.Datetime.now()
 
     def _set_payment_type(self, payment_type, notify=False):
         """Abono: se registra en Pagos (como siempre) y sigue la pregunta del cliente.
-        Vitrina: solo queda la verificación en Pagos Binance; no se registra en Pagos."""
+        Contado: solo queda la verificación en Pagos Binance; no se registra en Pagos."""
         self.ensure_one()
         verification = self.verification_id.sudo()
         self.write({'type_done': True})

@@ -128,7 +128,7 @@
         <field name="arch" type="xml"><search>
             <field name="reference" string="ID de orden"/>
             <filter name="abono" string="Abonos" domain="[('payment_type', '=', 'abono')]"/>
-            <filter name="vitrina" string="Pagos de vitrina" domain="[('payment_type', '=', 'vitrina')]"/>
+            <filter name="vitrina" string="Pagos de contado" domain="[('payment_type', '=', 'vitrina')]"/>
             <separator/>
             <filter name="not_in_pagos" string="No visibles en Pagos" domain="[('pagos_state', '=', 'hidden')]"/>
             <filter name="confirmed" string="Verificados" domain="[('state', '=', 'confirmed')]"/>
