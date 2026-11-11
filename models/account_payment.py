@@ -6,7 +6,8 @@ Contabilidad → Clientes → Pagos un pago en BORRADOR:
   memo "USDT REF: <últimos 6 dígitos>" y el "Cliente por defecto" de la cuenta
   receptora (por ejemplo "BINANCE - POR ASIGNAR"); si no hay, el cliente queda vacío.
   Contabilidad reemplaza ese cliente por el real antes de confirmar.
-Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
+Solo para ABONOS: los pagos de vitrina (el gerente responde "2" en WhatsApp) solo se
+verifican y no se registran. Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
 el motivo se ve en la verificación, con un botón para reintentarlo.
 La captura que mandó el gerente por WhatsApp se adjunta al pago y se muestra en su chatter.
 """
@@ -55,18 +56,29 @@ class BinancePaymentVerification(models.Model):
     payment_error = fields.Char(string='Error al crear el pago', readonly=True, copy=False)
     payment_capture_attached = fields.Boolean(readonly=True, copy=False)
     has_payment = fields.Boolean(string='Pago creado', compute='_compute_has_payment')
+    payment_type = fields.Selection(
+        [('abono', 'Abono'), ('vitrina', 'Pago de vitrina')], string='Tipo', readonly=True, copy=False,
+        help='Abono: se registra en Pagos. Pago de vitrina: solo se verifica; no se registra en Pagos.')
 
     def _compute_has_payment(self):
         for record in self:
             record.has_payment = bool(record.sudo().payment_id)
 
+    def _default_to_abono(self):
+        """Verificaciones que no pasan por la pregunta del bot (revisor o administrador): abono."""
+        self.sudo().filtered(lambda r: r.state == 'confirmed' and not r.payment_type).write(
+            {'payment_type': 'abono'})
+
     def _verify(self, result=None):
         res = super()._verify(result=result)
+        if not self.env.context.get('binance_ask_type'):
+            self._default_to_abono()
         self._create_draft_payment()
         return res
 
     def _confirm_manually(self, reviewer):
         res = super()._confirm_manually(reviewer)
+        self._default_to_abono()
         self._create_draft_payment()
         return res
 
@@ -84,7 +96,9 @@ class BinancePaymentVerification(models.Model):
 
     def _create_draft_payment(self):
         """Crea el pago en borrador. Nunca interrumpe la verificación."""
-        for record in self.sudo().filtered(lambda r: r.state == 'confirmed' and not r.payment_id):
+        # Solo los abonos se registran en Pagos; los pagos de vitrina solo se verifican.
+        for record in self.sudo().filtered(
+                lambda r: r.state == 'confirmed' and not r.payment_id and r.payment_type == 'abono'):
             try:
                 with self.env.cr.savepoint():
                     record._create_draft_payment_one()
@@ -158,6 +172,9 @@ class BinancePaymentVerification(models.Model):
     def action_create_payment(self):
         if not self.env.user.has_group('base.group_system'):
             raise UserError('Solo un administrador puede crear el pago en Contabilidad.')
+        if self.sudo().filtered(lambda r: r.payment_type == 'vitrina'):
+            raise UserError('Es un pago de vitrina: solo se verifica y no se registra en Pagos.')
+        self._default_to_abono()
         self._create_draft_payment()
         failed = self.sudo().filtered(lambda r: not r.payment_id and r.payment_error)
         if failed:

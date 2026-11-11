@@ -1,6 +1,9 @@
 """Cliente del pago a partir de un nombre de referencia que manda el gerente por WhatsApp.
 
-Flujo normal: el gerente manda SOLO la captura. Si el bot la valida, después del ✅ le pide
+Flujo normal: el gerente manda SOLO la captura. Si el bot la valida, después del ✅ pregunta
+si es un abono (1) o un pago de vitrina (2):
+  - Vitrina: solo queda la verificación en Pagos Binance; no se registra en Pagos.
+  - Abono (o sin respuesta en 3 minutos): se registra en Pagos y, si respondió "1", le pide
 un nombre de referencia (por ejemplo "cañon") y el gerente tiene 3 minutos para responder.
   - Si hay varios (aunque uno se llame exactamente así), el bot los muestra numerados y el
     gerente responde con el número.
@@ -16,7 +19,7 @@ import logging
 import re
 from datetime import timedelta
 
-from odoo import SUPERUSER_ID, fields, models
+from odoo import SUPERUSER_ID, api, fields, models
 
 _logger = logging.getLogger(__name__)
 
@@ -27,6 +30,9 @@ ASK_WINDOW_MINUTES = 3
 # Máximo de clientes que se muestran para elegir.
 MAX_OPTIONS = 5
 ASK_MESSAGE = '👤 ¿A qué cliente corresponde este pago? Escribe un nombre de referencia.'
+TYPE_MESSAGE = ('🧾 ¿Este pago es un abono o un pago de vitrina? Responde con el número:\n'
+                '1. Abono\n2. Pago de vitrina')
+VITRINA_MESSAGE = '🛍️ Pago de vitrina verificado. No se registra en Pagos.'
 REFERENCE_PATTERN = re.compile(r'[0-9]{6,32}')
 YES_WORDS = {'si', 'sí', 's', 'yes', 'ok', 'okey', 'dale', 'confirmo', 'correcto', 'listo', '👍', '✅'}
 NO_WORDS = {'no', 'n', 'nop', 'negativo', '❌', '👎'}
@@ -103,6 +109,14 @@ class WhatsAppAccount(models.Model):
                     name = _clean_name(message.get('text', {}).get('body'))
                     if not name or REFERENCE_PATTERN.fullmatch(re.sub(r'[\s.\-]', '', name)):
                         continue  # vacío o los dígitos del ID de orden
+                    # 1) ¿Abono o vitrina? (se pregunta antes que el cliente)
+                    typing = Receipt.search([
+                        ('whatsapp_account_id', '=', account.id), ('sender', '=', sender),
+                        ('type_done', '=', False), ('type_asked_at', '>=', asked_since),
+                    ], order='type_asked_at desc', limit=1)
+                    if typing:
+                        typing._handle_type_text(name)
+                        continue
                     base = [('whatsapp_account_id', '=', account.id), ('sender', '=', sender),
                             ('customer_partner_id', '=', False)]
                     # Primero la captura a la que el bot le preguntó; si no, una reciente.
@@ -127,6 +141,14 @@ class BinanceWhatsAppReceipt(models.Model):
         string='Opciones mostradas al gerente', readonly=True, copy=False)
     customer_pending_id = fields.Many2one(
         'res.partner', string='Cliente por confirmar', readonly=True, copy=False, ondelete='set null')
+    type_asked_at = fields.Datetime(string='Tipo pedido al gerente', readonly=True, copy=False)
+    type_done = fields.Boolean(readonly=True, copy=False)
+
+    def _link_confirmed_verification(self, record, values, result=None):
+        # Pagos verificados por el bot: el pago en Pagos se crea cuando el gerente dice que es
+        # un abono (o si no responde a tiempo), no en el momento de verificar.
+        return super()._link_confirmed_verification(
+            record.with_context(binance_ask_type=True), values, result=result)
 
     def _post_reply(self):
         already = self.final_reply
@@ -134,22 +156,85 @@ class BinanceWhatsAppReceipt(models.Model):
         # Recién se envió el ✅ (o el aviso de pago anterior al corte) y no hay cliente.
         just_answered = (self.final_reply == 'confirmed' and not already) or (
             self.before_cutoff and self.state == 'pending' and self.reply_state == 'posted')
-        if just_answered and not self.customer_partner_id and not self.customer_asked_at:
+        if just_answered and not self.type_asked_at and not self.type_done:
             try:
                 with self.env.cr.savepoint():
-                    if self.customer_pending_id:
-                        body = self._confirm_message()
-                    elif self.customer_option_ids:
-                        body = self._options_message()
-                    elif self.customer_name:
-                        body = self._not_found_message(self.customer_name)
-                    else:
-                        body = ASK_MESSAGE
-                    if self._send_to_manager(body):
-                        self.customer_asked_at = fields.Datetime.now()
+                    payment_type = self.verification_id.sudo().payment_type
+                    if payment_type:
+                        # Ya se sabe el tipo (por ejemplo, otra captura del mismo pago).
+                        self.type_done = True
+                        if payment_type == 'abono':
+                            self._start_customer_flow()
+                    elif self._send_to_manager(TYPE_MESSAGE):
+                        self.type_asked_at = fields.Datetime.now()
             except Exception:
-                _logger.exception('No se pudo pedir el cliente del comprobante %s', self.id)
+                _logger.exception('No se pudo preguntar el tipo de pago del comprobante %s', self.id)
         return res
+
+    # --- ¿Abono o pago de vitrina? -------------------------------------------
+
+    def _handle_type_text(self, text):
+        receipt = self.sudo()
+        receipt.ensure_one()
+        answer = text.lower().strip(' .!¡¿?')
+        option = OPTION_PATTERN.fullmatch(answer)
+        number = option.group(1) if option else ''
+        if number == '1' or answer.startswith('abono'):
+            receipt._set_payment_type('abono', notify=True)
+        elif number == '2' or 'vitrina' in answer:
+            receipt._set_payment_type('vitrina', notify=True)
+        elif receipt._send_to_manager('Responde 1 (Abono) o 2 (Pago de vitrina).'):
+            receipt.type_asked_at = fields.Datetime.now()
+
+    def _set_payment_type(self, payment_type, notify=False):
+        """Abono: se registra en Pagos (como siempre) y sigue la pregunta del cliente.
+        Vitrina: solo queda la verificación en Pagos Binance; no se registra en Pagos."""
+        self.ensure_one()
+        verification = self.verification_id.sudo()
+        self.write({'type_done': True})
+        if not verification or verification.payment_type:
+            return
+        verification.write({'payment_type': payment_type})
+        if payment_type == 'vitrina':
+            if notify:
+                self._send_to_manager(VITRINA_MESSAGE)
+            return
+        verification._create_draft_payment()
+        if notify:
+            self._start_customer_flow()
+
+    @api.model
+    def _cron_process_receipts(self):
+        res = super()._cron_process_receipts()
+        # Sin respuesta en 3 minutos: se toma como abono ("POR ASIGNAR" en Pagos).
+        limit = fields.Datetime.now() - timedelta(minutes=ASK_WINDOW_MINUTES)
+        for receipt in self.sudo().search([('type_done', '=', False), ('type_asked_at', '<', limit)], limit=50):
+            try:
+                with self.env.cr.savepoint():
+                    receipt._set_payment_type('abono', notify=False)
+            except Exception:
+                _logger.exception('No se pudo registrar como abono el comprobante %s', receipt.id)
+        return res
+
+    def _start_customer_flow(self):
+        """Pide el cliente (o muestra la lista / la confirmación si el nombre vino con la captura)."""
+        self.ensure_one()
+        if self.customer_partner_id or self.customer_asked_at:
+            return
+        try:
+            with self.env.cr.savepoint():
+                if self.customer_pending_id:
+                    body = self._confirm_message()
+                elif self.customer_option_ids:
+                    body = self._options_message()
+                elif self.customer_name:
+                    body = self._not_found_message(self.customer_name)
+                else:
+                    body = ASK_MESSAGE
+                if self._send_to_manager(body):
+                    self.customer_asked_at = fields.Datetime.now()
+        except Exception:
+            _logger.exception('No se pudo pedir el cliente del comprobante %s', self.id)
 
     def _send_to_manager(self, body):
         """Escribe al gerente en el mismo chat de WhatsApp de la captura."""

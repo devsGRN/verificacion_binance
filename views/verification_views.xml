@@ -43,6 +43,8 @@
             <field name="checked_at"/>
             <field name="received_amount" optional="show"/>
             <field name="payment_id" optional="show" groups="account.group_account_invoice,account.group_account_readonly"/>
+            <field name="payment_type" optional="show" widget="badge"
+                   decoration-info="payment_type == 'abono'" decoration-warning="payment_type == 'vitrina'"/>
             <field name="pagos_state" optional="show" widget="badge"
                    decoration-success="pagos_state == 'visible'"
                    decoration-danger="pagos_state == 'hidden'"/>
@@ -57,7 +59,8 @@
                 <button name="action_open_payment" string="Abrir pago" type="object" icon="fa-money" invisible="not has_payment"
                         groups="account.group_account_invoice,account.group_account_readonly"/>
                 <button name="action_create_payment" string="Crear pago en Contabilidad" type="object"
-                        invisible="state != 'confirmed' or has_payment" groups="base.group_system"/>
+                        invisible="state != 'confirmed' or has_payment or payment_type == 'vitrina'" groups="base.group_system"/>
+                <field name="payment_type" invisible="1"/>
                 <field name="state" widget="statusbar" statusbar_visible="draft,pending,confirmed"/>
                 <field name="has_payment" invisible="1"/></header>
             <sheet>
@@ -100,6 +103,7 @@
                 <group string="Contabilidad" invisible="state != 'confirmed'"
                        groups="account.group_account_invoice,account.group_account_readonly">
                     <field name="payment_id" string="Pago (borrador)"/>
+                    <field name="payment_type" string="Tipo" invisible="not payment_type"/>
                     <field name="payment_error" invisible="not payment_error" decoration-danger="1"/>
                 </group>
                 <notebook>
@@ -123,6 +127,9 @@
         <field name="model">binance.payment.verification</field>
         <field name="arch" type="xml"><search>
             <field name="reference" string="ID de orden"/>
+            <filter name="abono" string="Abonos" domain="[('payment_type', '=', 'abono')]"/>
+            <filter name="vitrina" string="Pagos de vitrina" domain="[('payment_type', '=', 'vitrina')]"/>
+            <separator/>
             <filter name="not_in_pagos" string="No visibles en Pagos" domain="[('pagos_state', '=', 'hidden')]"/>
             <filter name="confirmed" string="Verificados" domain="[('state', '=', 'confirmed')]"/>
             <filter name="pending" string="Pendientes" domain="[('state', '=', 'pending')]"/>
