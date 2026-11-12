@@ -2,8 +2,9 @@
 
 Flujo normal: el gerente manda SOLO la captura. Si el bot la valida, después del ✅ pregunta
 si es un abono (1) o un pago de contado (2):
-  - Contado: solo queda la verificación en Pagos Binance; no se registra en Pagos.
-  - Abono (o sin respuesta en 3 minutos): se registra en Pagos y, si respondió "1", le pide
+  - Contado (o sin respuesta en 3 minutos): se registra en el diario Binance con el cliente
+    de pagos de contado; no aparece en el aplicativo Pagos y no se pide cliente.
+  - Abono: se registra en Pagos y le pide
 un nombre de referencia (por ejemplo "cañon") y el gerente tiene 3 minutos para responder.
   - Si hay varios (aunque uno se llame exactamente así), el bot los muestra numerados y el
     gerente responde con el número.
@@ -32,7 +33,7 @@ MAX_OPTIONS = 5
 ASK_MESSAGE = '👤 ¿A qué cliente corresponde este pago? Escribe un nombre de referencia.'
 TYPE_MESSAGE = ('🧾 ¿Este pago es un abono o un pago de contado? Responde con el número:\n'
                 '1. Abono\n2. Pago de contado')
-VITRINA_MESSAGE = '🛍️ Pago de contado verificado. No se registra en Pagos.'
+VITRINA_MESSAGE = '🛍️ Pago de contado verificado.'
 REFERENCE_PATTERN = re.compile(r'[0-9]{6,32}')
 YES_WORDS = {'si', 'sí', 's', 'yes', 'ok', 'okey', 'dale', 'confirmo', 'correcto', 'listo', '👍', '✅'}
 NO_WORDS = {'no', 'n', 'nop', 'negativo', '❌', '👎'}
@@ -188,32 +189,31 @@ class BinanceWhatsAppReceipt(models.Model):
 
     def _set_payment_type(self, payment_type, notify=False):
         """Abono: se registra en Pagos (como siempre) y sigue la pregunta del cliente.
-        Contado: solo queda la verificación en Pagos Binance; no se registra en Pagos."""
+        Contado: se registra en el diario Binance con el cliente de pagos de contado."""
         self.ensure_one()
         verification = self.verification_id.sudo()
         self.write({'type_done': True})
         if not verification or verification.payment_type:
             return
         verification.write({'payment_type': payment_type})
+        verification._create_draft_payment()
         if payment_type == 'vitrina':
             if notify:
                 self._send_to_manager(VITRINA_MESSAGE)
-            return
-        verification._create_draft_payment()
-        if notify:
+        elif notify:
             self._start_customer_flow()
 
     @api.model
     def _cron_process_receipts(self):
         res = super()._cron_process_receipts()
-        # Sin respuesta en 3 minutos: se toma como abono ("POR ASIGNAR" en Pagos).
+        # Sin respuesta en 3 minutos: se toma como pago de contado.
         limit = fields.Datetime.now() - timedelta(minutes=ASK_WINDOW_MINUTES)
         for receipt in self.sudo().search([('type_done', '=', False), ('type_asked_at', '<', limit)], limit=50):
             try:
                 with self.env.cr.savepoint():
-                    receipt._set_payment_type('abono', notify=False)
+                    receipt._set_payment_type('vitrina', notify=False)
             except Exception:
-                _logger.exception('No se pudo registrar como abono el comprobante %s', receipt.id)
+                _logger.exception('No se pudo registrar como pago de contado el comprobante %s', receipt.id)
         return res
 
     def _start_customer_flow(self):
@@ -376,7 +376,7 @@ class BinanceWhatsAppReceipt(models.Model):
         for receipt in self.sudo().filtered('customer_partner_id'):
             verification = receipt.verification_id
             payment = verification.payment_id
-            if not payment or payment.state != 'draft':
+            if not payment or payment.state != 'draft' or verification.payment_type == 'vitrina':
                 continue
             default = verification.account_id.payment_partner_id
             if payment.partner_id and payment.partner_id != default:

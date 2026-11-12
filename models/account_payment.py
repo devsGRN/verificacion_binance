@@ -6,8 +6,10 @@ Contabilidad → Clientes → Pagos un pago en BORRADOR:
   memo "USDT REF: <últimos 6 dígitos>" y el "Cliente por defecto" de la cuenta
   receptora (por ejemplo "BINANCE - POR ASIGNAR"); si no hay, el cliente queda vacío.
   Contabilidad reemplaza ese cliente por el real antes de confirmar.
-Solo para ABONOS: los pagos de contado (el gerente responde "2" en WhatsApp) solo se
-verifican y no se registran. Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
+Los PAGOS DE CONTADO (el gerente responde "2" en WhatsApp, o no responde en 3 minutos) se
+crean igual, pero con el "Cliente para pagos de contado" (por ejemplo "BINANCE - PAGO DE
+CONTADO"), que no lleva la etiqueta del aplicativo Pagos: quedan en el diario Binance y no
+aparecen en ese aplicativo. Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
 el motivo se ve en la verificación, con un botón para reintentarlo.
 La captura que mandó el gerente por WhatsApp se adjunta al pago y se muestra en su chatter.
 """
@@ -37,6 +39,13 @@ class BinanceVerificationAccount(models.Model):
              'Si se deja vacío, el pago se crea sin cliente.',
     )
 
+    payment_contado_partner_id = fields.Many2one(
+        'res.partner', string='Cliente para pagos de contado',
+        help='Cliente fijo de los pagos de contado (por ejemplo "BINANCE - PAGO DE CONTADO"). '
+             'No debe tener la etiqueta que usa el aplicativo Pagos, para que esos pagos queden '
+             'solo en Contabilidad (diario Binance).',
+    )
+
     @api.constrains('payment_journal_id', 'company_id')
     def _check_payment_journal_company(self):
         for account in self:
@@ -58,7 +67,8 @@ class BinancePaymentVerification(models.Model):
     has_payment = fields.Boolean(string='Pago creado', compute='_compute_has_payment')
     payment_type = fields.Selection(
         [('abono', 'Abono'), ('vitrina', 'Pago de contado')], string='Tipo', readonly=True, copy=False,
-        help='Abono: se registra en Pagos. Pago de contado: solo se verifica; no se registra en Pagos.')
+        help='Abono: se registra en Pagos con su cliente. Pago de contado: se registra en el diario '
+             'Binance con el cliente de pagos de contado y no aparece en el aplicativo Pagos.')
 
     def _compute_has_payment(self):
         for record in self:
@@ -96,9 +106,9 @@ class BinancePaymentVerification(models.Model):
 
     def _create_draft_payment(self):
         """Crea el pago en borrador. Nunca interrumpe la verificación."""
-        # Solo los abonos se registran en Pagos; los pagos de vitrina solo se verifican.
+        # Abonos y pagos de contado; sin tipo todavía (el bot está preguntando) no se crea.
         for record in self.sudo().filtered(
-                lambda r: r.state == 'confirmed' and not r.payment_id and r.payment_type == 'abono'):
+                lambda r: r.state == 'confirmed' and not r.payment_id and r.payment_type):
             try:
                 with self.env.cr.savepoint():
                     record._create_draft_payment_one()
@@ -135,13 +145,20 @@ class BinancePaymentVerification(models.Model):
             'date': self._payment_date(),
             'ref': 'USDT REFF %s' % self._short_reference(),
         }
-        partner = self.account_id.payment_partner_id
+        if self.payment_type == 'vitrina':
+            partner = self.account_id.payment_contado_partner_id
+            if not partner:
+                raise UserError('Configura el "Cliente para pagos de contado" en la cuenta receptora %s.'
+                                % self.account_id.name)
+        else:
+            partner = self.account_id.payment_partner_id
         if partner:
             values['partner_id'] = partner.id
         payment = self.env['account.payment'].with_user(SUPERUSER_ID).with_company(journal.company_id).create(values)
         self.sudo().write({'payment_id': payment.id, 'payment_error': False})
         self._attach_capture_to_payment()
-        self.receipt_ids._apply_customer_to_payment()
+        if self.payment_type != 'vitrina':
+            self.receipt_ids._apply_customer_to_payment()
 
     def _attach_capture_to_payment(self):
         """Adjunta la captura de WhatsApp al pago en borrador y la muestra en su chatter.
@@ -172,8 +189,6 @@ class BinancePaymentVerification(models.Model):
     def action_create_payment(self):
         if not self.env.user.has_group('base.group_system'):
             raise UserError('Solo un administrador puede crear el pago en Contabilidad.')
-        if self.sudo().filtered(lambda r: r.payment_type == 'vitrina'):
-            raise UserError('Es un pago de contado: solo se verifica y no se registra en Pagos.')
         self._default_to_abono()
         self._create_draft_payment()
         failed = self.sudo().filtered(lambda r: not r.payment_id and r.payment_error)

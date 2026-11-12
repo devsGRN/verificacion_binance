@@ -51,14 +51,16 @@ class BinancePaymentVerification(models.Model):
         'res.partner', string='Cliente del pago', related='payment_id.partner_id')
 
     @api.depends('payment_id', 'payment_id.partner_id', 'payment_id.partner_id.category_id',
-                 'payment_id.state', 'account_id.pagos_action_id')
+                 'payment_id.state', 'account_id.pagos_action_id', 'payment_type')
     def _compute_pagos_state(self):
         for record in self:
             record.pagos_state = False
             record.pagos_message = False
         Payment = self.env['account.payment'].sudo().with_context(active_test=False)
         for account in self.mapped('account_id'):
-            records = self.filtered(lambda r: r.account_id == account and r.payment_id)
+            # Los pagos de contado no van en el aplicativo Pagos: no se evalúan.
+            records = self.filtered(lambda r: r.account_id == account and r.payment_id
+                                    and r.payment_type != 'vitrina')
             if not records:
                 continue
             try:

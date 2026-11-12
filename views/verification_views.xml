@@ -22,6 +22,7 @@
             <separator string="Contabilidad" colspan="2"/>
             <field name="payment_journal_id" options="{'no_create': True}"/>
             <field name="payment_partner_id" options="{'no_create': True}"/>
+            <field name="payment_contado_partner_id" options="{'no_create': True}"/>
             <field name="pagos_action_id" options="{'no_create': True}"/>
             <div class="text-muted" colspan="2">Menú de Pagos: el menú del aplicativo "Pagos". En Verificaciones se muestra si cada pago en borrador aparece ahí (según el mismo filtro de ese menú).</div>
 
@@ -59,7 +60,7 @@
                 <button name="action_open_payment" string="Abrir pago" type="object" icon="fa-money" invisible="not has_payment"
                         groups="account.group_account_invoice,account.group_account_readonly"/>
                 <button name="action_create_payment" string="Crear pago en Contabilidad" type="object"
-                        invisible="state != 'confirmed' or has_payment or payment_type == 'vitrina'" groups="base.group_system"/>
+                        invisible="state != 'confirmed' or has_payment" groups="base.group_system"/>
                 <field name="payment_type" invisible="1"/>
                 <field name="state" widget="statusbar" statusbar_visible="draft,pending,confirmed"/>
                 <field name="has_payment" invisible="1"/></header>
