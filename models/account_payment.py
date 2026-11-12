@@ -9,7 +9,8 @@ Contabilidad → Clientes → Pagos un pago en BORRADOR:
 Los PAGOS DE CONTADO (el gerente responde "2" en WhatsApp, o no responde en 3 minutos) se
 crean igual, pero con el "Cliente para pagos de contado" (por ejemplo "BINANCE - PAGO DE
 CONTADO"), que no lleva la etiqueta del aplicativo Pagos: quedan en el diario Binance y no
-aparecen en ese aplicativo. Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
+aparecen en ese aplicativo. Se crean como tipo "Proveedor" para que el asiento vaya contra la
+"Cuenta por pagar" de ese contacto (Ventas nacionales al detal). Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
 el motivo se ve en la verificación, con un botón para reintentarlo.
 La captura que mandó el gerente por WhatsApp se adjunta al pago y se muestra en su chatter.
 """
@@ -150,6 +151,9 @@ class BinancePaymentVerification(models.Model):
             if not partner:
                 raise UserError('Configura el "Cliente para pagos de contado" en la cuenta receptora %s.'
                                 % self.account_id.name)
+            # Tipo "Proveedor": así la contrapartida del asiento es la "Cuenta por pagar" de ese
+            # contacto (en Canon: 5111002 Ventas nacionales al detal) y no una cuenta por cobrar.
+            values['partner_type'] = 'supplier'
         else:
             partner = self.account_id.payment_partner_id
         if partner:
