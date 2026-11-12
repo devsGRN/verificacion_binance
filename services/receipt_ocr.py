@@ -66,7 +66,30 @@ DEPOSIT_SCREEN_RE = re.compile(
     r'|\bTx\s*id\b|Transferencia\s*fuera\s*de\s*la\s*cadena|Off[\s-]*chain', re.I)
 IN_PROCESS_RE = re.compile(r'Retiro\s*en\s*proceso|Withdrawal\s*(?:processing|in\s*progress)', re.I)
 OFFCHAIN_RE = re.compile(
-    r'(?:fuera\s*de\s*la\s*cadena|off[\s-]*chain\s*transfer|internal\s*transfer)\s*:?\s*([0-9]{6,32})', re.I)
+    r'(?:fuera\s*de\s*la\s*cadena|off[\s-]*chain\s*transfer|internal\s*transfer)', re.I)
+
+
+def _offchain_number(text):
+    """Número de la "Transferencia fuera de la cadena". Binance a veces lo parte en dos
+    líneas ("… cadena 430" / "007444166") y el OCR puede leer el icono de copiar en medio:
+    se unen los grupos de dígitos seguidos, hasta la primera palabra o importe."""
+    match = OFFCHAIN_RE.search(text)
+    if not match:
+        return None
+    digits = ''
+    for token in re.split(r'\s+', text[match.end():match.end() + 80].strip()):
+        clean = re.sub(r'[^0-9A-Za-z]', '', token)
+        if not clean:
+            continue  # icono o signo suelto
+        if clean.isdigit():
+            digits += clean
+            continue
+        if len(clean) == 1:
+            continue  # el icono de copiar leído como una letra
+        if re.fullmatch(CURRENCIES, clean, re.I) and digits:
+            return None  # el último número era un importe ("33 USDT"), no parte del Txid
+        break
+    return digits if 9 <= len(digits) <= 32 else None
 HEX_LINE_RE = re.compile(r'^(0x)?[0-9a-f]+$', re.I)
 NETWORK_RE = re.compile(
     r'\b(TRX|TRC20|TRON|BSC|BEP20|ETH|ERC20|SOL|MATIC|POLYGON|ARBITRUM|OPBNB|TON|AVAXC|BASE|OPTIMISM)\b', re.I)
@@ -81,9 +104,9 @@ def normalize_network(name):
 def _find_txid(text):
     """Txid de la captura: 'fuera de la cadena 123…' o un hash hexadecimal (que el OCR suele
     partir en varias líneas). La dirección (0x + 40) no se confunde con el hash (0x + 64)."""
-    offchain = OFFCHAIN_RE.search(text)
+    offchain = _offchain_number(text)
     if offchain:
-        return 'offchain-%s' % offchain.group(1)
+        return 'offchain-%s' % offchain
     runs, current = [], ''
     for line in text.splitlines():
         line = re.sub(r'\s+', '', line)
