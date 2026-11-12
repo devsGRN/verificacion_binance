@@ -9,8 +9,8 @@ Contabilidad → Clientes → Pagos un pago en BORRADOR:
 Los PAGOS DE CONTADO (el gerente responde "2" en WhatsApp, o no responde en 3 minutos) se
 crean igual, pero con el "Cliente para pagos de contado" (por ejemplo "BINANCE - PAGO DE
 CONTADO"), que no lleva la etiqueta del aplicativo Pagos: quedan en el diario Binance y no
-aparecen en ese aplicativo. El asiento va contra la "Cuenta por cobrar" de ese contacto
-(Ventas nacionales al detal). Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
+aparecen en ese aplicativo. En su asiento, la contrapartida se cambia por la "Cuenta contable
+de pagos de contado" (Ventas nacionales al detal). Se crea una sola vez por verificación. Si falla, el pago queda verificado igual y
 el motivo se ve en la verificación, con un botón para reintentarlo.
 La captura que mandó el gerente por WhatsApp se adjunta al pago y se muestra en su chatter.
 """
@@ -45,6 +45,13 @@ class BinanceVerificationAccount(models.Model):
         help='Cliente fijo de los pagos de contado (por ejemplo "BINANCE - PAGO DE CONTADO"). '
              'No debe tener la etiqueta que usa el aplicativo Pagos, para que esos pagos queden '
              'solo en Contabilidad (diario Binance).',
+    )
+
+    payment_contado_account_id = fields.Many2one(
+        'account.account', string='Cuenta contable de pagos de contado',
+        help='Cuenta de contrapartida del asiento de los pagos de contado (por ejemplo "5111002 '
+             'Ventas nacionales al detal"). Reemplaza a "Cuentas por cobrar clientes" en el asiento '
+             'en borrador. Vacío: se deja la cuenta que pone Odoo.',
     )
 
     @api.constrains('payment_journal_id', 'company_id')
@@ -151,9 +158,8 @@ class BinancePaymentVerification(models.Model):
             if not partner:
                 raise UserError('Configura el "Cliente para pagos de contado" en la cuenta receptora %s.'
                                 % self.account_id.name)
-            # Se crea como "Cliente" (igual que los abonos): la contrapartida del asiento es la
-            # "Cuenta por cobrar" de ese contacto (en Canon: 5111002 Ventas nacionales al detal).
-            # Como "Proveedor" iría a Cuentas por pagar proveedores, que no es lo que se quiere.
+            # Se crea como "Cliente" (igual que los abonos); después _set_contado_account cambia
+            # la contrapartida del asiento por la cuenta de pagos de contado.
         else:
             partner = self.account_id.payment_partner_id
         if partner:
@@ -163,6 +169,30 @@ class BinancePaymentVerification(models.Model):
         self._attach_capture_to_payment()
         if self.payment_type != 'vitrina':
             self.receipt_ids._apply_customer_to_payment()
+        else:
+            self._set_contado_account(payment)
+
+    def _set_contado_account(self, payment):
+        """Pago de contado: en el asiento en borrador, cambia la cuenta de contrapartida
+        (Cuentas por cobrar clientes) por la configurada (Ventas nacionales al detal). Es el
+        mismo cambio que hace contabilidad a mano en "Asiento contable". Si falla, el pago
+        queda creado igual y el motivo se ve en la verificación."""
+        account = self.account_id.payment_contado_account_id
+        if not account:
+            return
+        try:
+            with self.env.cr.savepoint():
+                lines = payment.move_id.line_ids.filtered(
+                    lambda line: line.account_id == payment.destination_account_id)
+                if len(lines) != 1:
+                    raise UserError('No se encontró la línea de contrapartida del asiento.')
+                lines.with_user(SUPERUSER_ID).write({'account_id': account.id})
+        except Exception as error:
+            _logger.exception('No se pudo poner la cuenta de contado en el pago de la verificación %s', self.id)
+            detail = error.args[0] if isinstance(error, UserError) and error.args else 'ver logs'
+            self.sudo().write({'payment_error': (
+                'El pago se creó, pero no se pudo poner la cuenta "%s" en el asiento (%s). '
+                'Cámbiala a mano en Asiento contable.' % (account.display_name, detail))[:250]})
 
     def _attach_capture_to_payment(self):
         """Adjunta la captura de WhatsApp al pago en borrador y la muestra en su chatter.
